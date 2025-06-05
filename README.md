@@ -1,32 +1,53 @@
-# Pretrained CrP prediction models
-Pretrained models for performing next-day CRP predictions after start of antibiotic therapy.
+# Pretrained CrP Prediction Models
 
-The Notebook **crp_forecasts** can be used for performing predictions on a specified dataset of patient specific CrP values.
+Pretrained models for performing next-day CRP predictions after the start of antibiotic therapy.
 
-To use the notebook with you own data, please read the section on **Data requirements** carefully.
+## Using the Docker Image (with Mounted Python Files)
 
-## Instructions
-- Extract patient cohort (see section **Cohort definition**)
-- Prepare CSV-files as model **input** (see section **Data requirements** for further descriptions)
-- Clone the repositpory to your local machine
-- Adapt the paths to your input files in the Jupyter-Notebook **crp_forecasts** (see Step 0 in the Notebook)
-- Install libraries based on  **requirements.txt**
-- Choose a trained model from the list of models CRP forecasts should be based on (see Step 2 in the Notebook)
-- Execute the Jupyter-Notebook **crp_forecasts**
-- It will produce the following **outputs**:
-  - Performance metrics as print (see Step 3 in the Notebook)
-  - Dataframes with next day CRP-predictions and actual values (see Step 3 in the Notebook)
-  - Plots of forecasts for specific patients (see Step 4 in the Notebook)
+This project provides a prebuilt Docker image designed to be used with mounted Python scripts and configuration files. The image does not include these files directly to allow for potential adaptions to the data extraction or modelling steps. Config files and Python files must be provided via volume mounts when running the container.
+
+### 1. Pull the Docker Image
+
+```bash
+docker pull gernotpuc/crp-pipeline:script_v4
+```
+
+### 2. Run the Docker Container with Mounted Files
+
+Replace the local paths below with your actual file locations:
+
+```bash
+docker run \
+  -v /YOUR_PATH/crp_cohort_extraction.py:/app/crp_cohort_extraction.py \
+  -v /YOUR_PATH/config_crp.yaml:/app/config_crp.yaml \
+  -v /YOUR_PATH/env_py.env:/app/env_py.env \
+  -v /YOUR_PATH/results:/app/results \
+  gernotpuc/crp-pipeline:script_v4 \
+  python crp_cohort_extraction.py --results_dir /app/results
+```
+
+Note: This setup requires that the Python script, configuration file, environment variables file, and output directory be provided at runtime using Docker's volume mounting (`-v` option). These files are not included in the Docker image.
+
+## Using the Forecasting Notebook
+
+The notebook `crp_forecasts` enables next-day CRP prediction based on patient-specific laboratory and antibiotic administration data.
+
+### Outputs:
+
+- Performance metrics
+- DataFrames with predicted and actual CRP values
 
 ## Introduction
-Internationally, and also in Germany, the prevalence of multi-resistant pathogens, which do not respond to antibiotics or only respond to them to a limited extent, is increasing. The main cause is the incorrect prescription and application of antibiotics, in particular the unnecessary and excessively long treatment with broad-spectrum antibiotics. 
 
-In addition to vital parameters, inflammation levels, especially C-reactive protein (CrP), are the most important clinical parameters for sepsis. However, the response of CRP levels to antibiotic treatment is delayed due to a half-life of 19 hours. Thus, despite overall clinical improvement, an increase in CrP is often still detected, which can lead to an (unnecessary) intensification of antibiotic therapy. The reliable prediction of CrP can therefore contribute to a more restrictive antibiotic therapy. 
+Internationally, and also in Germany, the prevalence of multi-resistant pathogens, which do not respond to antibiotics or only respond to them to a limited extent, is increasing. The main cause is the incorrect prescription and application of antibiotics, in particular the unnecessary and excessively long treatment with broad-spectrum antibiotics.
 
-Using the FHIR data set with a cohort of 398 patients at the University Hospital Essen, various monocentric, global time series models were trained, which predict patient-specific CrP values.
-Models were intentionally kept simple in order to keep the data requirements as low as possible. Thus, no covariates were used here and predictions are made only based on the historic CrP values and time stamps of administered antibiotics.
+In addition to vital parameters, inflammation levels, especially C-reactive protein (CrP), are the most important clinical parameters for sepsis. However, the response of CRP levels to antibiotic treatment is delayed due to a half-life of 19 hours. Thus, despite overall clinical improvement, an increase in CrP is often still detected, which can lead to an (unnecessary) intensification of antibiotic therapy. The reliable prediction of CrP can therefore contribute to a more restrictive antibiotic therapy.
 
-On an internal validation dataset with 398 time series, the following performances could be achieved for the next day CrP-prediction after start of antibiotic therapy in a 5-fold cross validation with 20 repeats:
+Using the FHIR data set with a cohort of 398 patients at the University Hospital Essen, various monocentric, global time series models were trained, which predict patient-specific CrP values. Models were intentionally kept simple in order to keep the data requirements as low as possible. Thus, no covariates were used here and predictions are made only based on the historic CrP values and time stamps of administered antibiotics.
+
+## Model Performance
+
+Performance was evaluated on an internal dataset of 398 time series using 5-fold cross-validation with 20 repeats.
 
 | Model                                                             | MAE  | RMSE | MSE   | MAPE  |
 |-------------------------------------------------------------------|------|------|-------|-------|
@@ -37,42 +58,34 @@ On an internal validation dataset with 398 time series, the following performanc
 | Baseline model: Average Forecast                                  | 7.70 | 10.72| 98.53 | 60.69 |
 | Baseline model: Naive Forecast                                    | 4.82 | 7.18 | 26.88 | 42.47 |
 
+## Cohort Definition
 
-### Cohort definition:<br>  
+The patient cohort is defined according to the following criteria:
 
-Please extract your patient cohort based on the following criteria:
+- Patient is an inpatient
+- Patient is at least 18 years old
+- Cancer diagnosis with ICD Code C00–96, registered after 01-01-2020
+- Availability of CRP values during hospital stays.
+- IV-administered antibiotics with an iv. antibiotic ATC code.
 
-- Patient >= 18 years. Selection sufficient, no birth dates required in the dataset.
-- Cancer diagnosis with ICD Code C00-96, first registration after 01-01-2020. Selection sufficient, no ICD-10 codes required in the dataset.
-- CRP values, recorded during stationary hospital stays. An encounter identifier, a subject identifier, time stamps of the blood collection and the respective CRP values must be provided.
-- Medications: Intravenously administered antibiotics with one of the following ATC codes. An encounter identifier, a subject identifier and time stamps of the antibiotic administration must be provided. Encounter identifiers should match those in the dataset with CRP values.
-ATC codes:
-J01DB, J01DC , J01DD, J01DI, J01DH, J01CR50, J01CR, J01CE, J01CA, J01C, J01FA, J01G, J01M, J01FF, J01XX08, J01XA
+## Requirements
 
-### Data requirements:<br>  
-CSV files of patient specific CRP values and administered antibiotics are used as inputs for the prediction models.
-
-**File syntax:**
-
-The **laboratory values** file must contain the following columns:
-
-- encounter_id --> Unique identifier of each hospital stay; *any datatype*
-- subject_reference  --> Unique identifier of each patient; *any datatype*
-- category --> Type of variable; *any datatype*
-- recorded_time --> Timestamp of the recording; *should be valid timestamps, please stick to the given examples if possible*
-- value -->  Value of the recording; *integer or float*
-
-**encounter_id,subject_reference,category,recorded_time,value**<br>
-Encounter/dsadasf34f,Patient/d23423fdsdf,CRP,2021-09-27 08:03:00+00,1.6<br>
-Encounter/dsadasf34f,Patient/d23423fdsdf,CRP,2021-09-28 12:45:00+00,2.8<br>
-Encounter/34fsd2ff34,Patient/sdasd23dq14,CRP,2023-01-03 00:10:00+00,1.1
+- Docker must be installed on your system: [Install Docker](https://docs.docker.com/get-docker/)
+- The required Python environment is already included in the Docker image, so no additional installation steps are necessary.
 
 
-The file for the **antibiotics administered** must contain the timestamps of antibiotic administrations per hospital encounter. Please structure the file as in the following example:
+## Project Structure
 
-**encounter_id,recorded_time**<br>
-Encounter/dsadasf34f,2021-09-27 06:00:00+00<br>
-Encounter/dsadasf34f,2021-09-27 12:30:00+00
+```
+├── crp_cohort_extraction.py      # Python script (mounted)
+├── config_crp.yaml               # Config file (mounted)
+├── env_py.env                    # Environment variables (mounted)
+├── results/                      # Output directory (mounted)
+├── crp_forecasts.ipynb           # Jupyter notebook for prediction
+├── requirements.txt              # Dependency list
+└── README.md                     # Project documentation
+```
 
-### Requirements:<br>
-Please use requirements.txt file for installing required packages.<br>
+## Contact
+
+For questions, feedback, or issues, please use GitHub Issues or contact the repository maintainer directly.
