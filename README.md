@@ -51,10 +51,10 @@ Performance was evaluated on an internal dataset of 2,823 time series using 5-fo
 
 | Model                                                             | MAE  | RMSE | MSE   | MAPE  |
 |-------------------------------------------------------------------|------|------|-------|-------|
-| Gradient Boosting (LightGBM)                                      | 3.35 | 4.73 | 22.40 | 35.59 |
-| Neural Network (NBEATS)                                           | 3.30 | 4.80 | 23.06 | 30.58 |
-| Weighted Ensemble of NNs (DeepAR, TiDE, PatchTST, DLinear, TFTM)  | 3.67 | 5.13 | 26.39 | 36.64 |
-| Zero-shot Large Language Model (Chronos)                          | 3.96 | 5.65 | 32.01 | 39.13 |
+| DeepAR (Deep Learning)                                            | 3.35 | 4.73 | 22.40 | 35.59 |
+| TiDE (Deep Learning)                                              | 3.30 | 4.80 | 23.06 | 30.58 |
+| PatchTST (Deep Learning)                                          | 3.67 | 5.13 | 26.39 | 36.64 |
+| Chronos (Foundation model)                                        | 3.96 | 5.65 | 32.01 | 39.13 |
 | Baseline model: Average Forecast                                  | 7.70 | 10.72| 98.53 | 60.69 |
 | Baseline model: Naive Forecast                                    | 4.82 | 7.18 | 26.88 | 42.47 |
 
@@ -81,7 +81,6 @@ The patient cohort is defined according to the following criteria:
 ├── config_crp.yaml               # Config file (mounted)
 ├── env_py.env                    # Environment variables (mounted)
 ├── results/                      # Output directory (mounted)
-├── crp_forecasts.ipynb           # Jupyter notebook for prediction
 ├── requirements.txt              # Dependency list
 └── README.md                     # Project documentation
 ```
