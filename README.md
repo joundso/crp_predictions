@@ -49,14 +49,24 @@ Using the FHIR data set with a cohort of 2,823 patients at the University Hospit
 
 Performance was evaluated on an internal dataset of 2,823 time series using 5-fold cross-validation with 20 repeats.
 
-| Model                                                             | MAE  | RMSE | MSE   | MAPE  |
+| Model                                                             | MAE (95% CI)  | RMSE (95% CI) | MSE (95% CI)   | MAPE (95% CI)  |
 |-------------------------------------------------------------------|------|------|-------|-------|
 | DeepAR (Deep Learning)                                            | 3.35 | 4.73 | 22.40 | 35.59 |
 | TiDE (Deep Learning)                                              | 3.30 | 4.80 | 23.06 | 30.58 |
 | PatchTST (Deep Learning)                                          | 3.67 | 5.13 | 26.39 | 36.64 |
 | Chronos (Foundation model)                                        | 3.96 | 5.65 | 32.01 | 39.13 |
+| Statistical model: AutoARIMA                                      | 3.22 (2.64-3.80) | 5.07 (4.22-5.96) | 25.90 (17.80-35.59) | 68.44 (56.59-80.70) |
+
 | Baseline model: Average Forecast                                  | 7.70 | 10.72| 98.53 | 60.69 |
 | Baseline model: Naive Forecast                                    | 4.82 | 7.18 | 26.88 | 42.47 |
+
+Metric,Point Estimate,95% CI Lower,95% CI Upper
+MAE,3.221816166483935,2.6447752906508795,3.8023193031202562
+MSE,25.900864013481584,17.80435833779092,35.58891180552404
+RMSE,5.07114975941969,4.219521083700954,5.965644254106789
+MAPE,68.44069155357688,56.592548166922576,80.6997544714439
+SMAPE,26.432217366730548,22.582729142333694,30.311430868228975
+
 
 ## Cohort Definition
 
