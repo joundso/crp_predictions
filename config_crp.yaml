@@ -19,8 +19,8 @@ crp_laboratory_code:
 
 # Adapt whether diagnosis type (e.g., diagnosis at admission) is saved in conditions or encounters
 diagnosis_type_ref:
-- 'condition'
-#- 'encounter'
+#- 'condition'
+- 'encounter'
 
 # Adapt the field name in the FHIR resource Encounter, in which the encounter type is stored (e.g., inpatient stay)
 encounter_stay_type_field:
