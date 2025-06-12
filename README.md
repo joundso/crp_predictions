@@ -49,23 +49,15 @@ Using the FHIR data set with a cohort of 2,823 patients at the University Hospit
 
 Performance was evaluated on an internal dataset of 2,823 time series using 5-fold cross-validation with 20 repeats.
 
-| Model                                                             | MAE (95% CI)  | RMSE (95% CI) | MSE (95% CI)   | MAPE (95% CI)  |
+| Model                                                             | MAE (95% CI)  | RMSE (95% CI) | MSE (95% CI)   | SMAPE (95% CI)  |
 |-------------------------------------------------------------------|------|------|-------|-------|
-| DeepAR (Deep Learning)                                            | 3.35 | 4.73 | 22.40 | 35.59 |
-| TiDE (Deep Learning)                                              | 3.30 | 4.80 | 23.06 | 30.58 |
-| PatchTST (Deep Learning)                                          | 3.67 | 5.13 | 26.39 | 36.64 |
-| Chronos (Foundation model)                                        | 3.96 | 5.65 | 32.01 | 39.13 |
-| Statistical model: AutoARIMA                                      | 3.22 (2.64-3.80) | 5.07 (4.22-5.96) | 25.90 (17.80-35.59) | 68.44 (56.59-80.70) |
-
-| Baseline model: Average Forecast                                  | 7.70 | 10.72| 98.53 | 60.69 |
-| Baseline model: Naive Forecast                                    | 4.82 | 7.18 | 26.88 | 42.47 |
-
-Metric,Point Estimate,95% CI Lower,95% CI Upper
-MAE,3.221816166483935,2.6447752906508795,3.8023193031202562
-MSE,25.900864013481584,17.80435833779092,35.58891180552404
-RMSE,5.07114975941969,4.219521083700954,5.965644254106789
-MAPE,68.44069155357688,56.592548166922576,80.6997544714439
-SMAPE,26.432217366730548,22.582729142333694,30.311430868228975
+| DeepAR (Deep Learning)                                            | 2.54 (2.08-3.04) | 4.20 (3.44-5.02) | 17.81 (11.85-25.19) | 20.54 (17.88-23.40) |
+| TiDE (Deep Learning)                                              | 2.50 (2.05-2.98) | 4.13 (3.34-4.96) | 17.25 (11.16-24.62) | 20.00 (17.56-22.60) |
+| PatchTST (Deep Learning)                                          | 2.49 (2.04-3.00) | 4.14 (3.33-4.91) | 17.28 (11.10-23.99) | 20.04 (17.62-22.68) |
+| Chronos fine tuned (Foundation model)                             | 2.47 (1.88-3.13) | 3.98 (3.05-4.97) | 16.10 (9.31-24.67)  | 20.61 (17.00-24.67) |
+| Chronos zero shot (Foundation model)                              | 2.65 (2.09-3.28) | 4.01 (3.21-4.88) | 16.32 (10.29-23.80) | 22.02 (18.32-25.83) |
+| Statistical model: AutoARIMA                                      | 3.22 (2.64-3.80) | 5.07 (4.22-5.96) | 25.90 (17.80-35.59) | 26.43 (22.58-30.31) |
+| Baseline model: Average Forecast                                  | 3.79 (3.11-4.45) | 5.87 (4.81-6.93) | 34.78 (23.12-47.98) | 29.72 (26.59-32.91) |
 
 
 ## Cohort Definition
