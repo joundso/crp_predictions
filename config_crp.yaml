@@ -9,11 +9,8 @@ authentication_method:
 - 'basic_auth'
 #- 'token'
 
-# Adapt LOINC for laboratory values 
-loinc_category_laboratory:
-- '26436-6'
 
-# Adapt coding name for CRP 
+# Adapt the label for CRP that is used in the parameter code of the Observation resource
 crp_laboratory_code:
 - 'zCRP'
 
