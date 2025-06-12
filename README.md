@@ -8,8 +8,14 @@ This project provides a prebuilt Docker image designed to be used with mounted P
 
 ### 1. Pull the Docker Image
 
+For Linux with arm64
 ```bash
-docker pull gernotpuc/crp-pipeline:script_v4
+docker pull gernotpuc/crp-pipeline:script_v5
+```
+
+For Linux with amd64
+```bash
+docker pull gernotpuc/crp-pipeline:script_v6
 ```
 
 ### 2. Run the Docker Container with Mounted Files
@@ -22,7 +28,7 @@ docker run \
   -v /YOUR_PATH/config_crp.yaml:/app/config_crp.yaml \
   -v /YOUR_PATH/env_py.env:/app/env_py.env \
   -v /YOUR_PATH/results:/app/results \
-  gernotpuc/crp-pipeline:script_v4 \
+  gernotpuc/crp-pipeline:script_v6 \
   python crp_cohort_extraction.py --results_dir /app/results
 ```
 
