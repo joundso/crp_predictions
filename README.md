@@ -34,9 +34,9 @@ docker run \
 
 Note: This setup requires that the Python script, configuration file, environment variables file, and output directory be provided at runtime using Docker's volume mounting (`-v` option). These files are not included in the Docker image.
 
-## Using the Forecasting Notebook
+## Using the Cohort extraction and Forecasting Python File
 
-The notebook `crp_forecasts` enables next-day CRP prediction based on patient-specific laboratory and antibiotic administration data.
+The Python file `crp_cohort_extraction` enables the cohort extraction and next-day CRP prediction based on patient-specific laboratory and antibiotic administration data. Adjust the config_crp.yaml and env_py.env file to fit your FHIR database.
 
 ### Outputs:
 
