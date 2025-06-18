@@ -22,6 +22,11 @@ from autogluon.timeseries import TimeSeriesDataFrame, TimeSeriesPredictor
 import argparse
 import os
 
+print("Running in directory:", os.getcwd())
+print("Files in /app:", os.listdir("/app"))
+print("Is predictor.pkl there?:", os.path.exists("crp_ensemble/predictor.pkl"))
+
+
 # Parse base paths
 parser = argparse.ArgumentParser()
 parser.add_argument("--results_dir", default="./results", help="Path to results folder")
@@ -43,7 +48,7 @@ with open('config_crp.yaml', 'r') as file:
 # Load configs
 atc_codes = config['medication_codes']
 icd_codes = config['icd_codes']
-loinc_category_laboratory = config['loinc_category_laboratory']
+#loinc_category_laboratory = config['loinc_category_laboratory']
 crp_laboratory_code = config['crp_laboratory_code']
 fhir_extract = config['fhir_extract']
 models_eval = config['models_eval']
