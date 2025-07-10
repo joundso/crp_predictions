@@ -14,6 +14,10 @@ authentication_method:
 crp_laboratory_code:
 - 'zCRP'
 
+# Adapt the measurment unit of CRP (mg/l or mg/dl)
+crp_unit:
+- 'mg/l'
+
 # Adapt whether diagnosis type (e.g., diagnosis at admission) is saved in conditions or encounters
 diagnosis_type_ref:
 #- 'condition'
