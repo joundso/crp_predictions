@@ -70,20 +70,7 @@ patients_birthdate_field = config['patients_birthdate_field']
 patients_birthdate_field = patients_birthdate_field[0]
 
 
-## Gießen
-#auth = Ahoy(
-#auth_url=FHIR_SERVER_URL,
-#auth_type="BasicAuth",
-#username="user1",
-#auth_method="env",
-#)
-
-
-#dotenv_path = './config/env_py.env'
-#dotenv_path = '/Users/Gernot/Documents/coding/env_py.env'
 load_dotenv(dotenv_path="/app/env_py.env")  # or relative: load_dotenv(".env")
-
-#load_dotenv(dotenv_path)
 
 
 
