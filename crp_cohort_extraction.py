@@ -58,7 +58,8 @@ authentication_method = authentication_method[0]
 
 conditions = pd.DataFrame(icd_codes, columns=['icd-10'])
 medications = pd.DataFrame(atc_codes, columns=['atc_codes'])
-
+crp_unit = config['crp_unit']
+crp_unit = crp_unit[0]
 encounter_diagnosis_type_field = config['encounter_diagnosis_type_field']
 encounter_diagnosis_type_field = encounter_diagnosis_type_field[0]
 encounter_diagnosis_type_content = config['encounter_diagnosis_type_content']
@@ -271,6 +272,8 @@ dr_bundles = search.trade_rows_for_bundles(
 )
 # Convert the returned bundles to a dataframe
 crp_df = search.bundles_to_dataframe(bundles=dr_bundles)
+if crp_unit == 'mg/l':
+    crp_df['valueQuantity_value'] = crp_df['valueQuantity_value'] / 10
 print ('FHIR Query #6: Number of CRP values for patients receiving antibiotics during filtered encounters: ', crp_df['id'].nunique())
 print ('Number of unique encounters with at least one CRP value: ', crp_df['encounter_reference'].nunique())
 #crp_df.to_csv('crp_df.csv', sep = ';', index=False)
