@@ -38,10 +38,14 @@ Note: This setup requires that the Python script, configuration file, environmen
 
 The Python file `crp_cohort_extraction` enables the cohort extraction and next-day CRP prediction based on patient-specific laboratory and antibiotic administration data. Adjust the config_crp.yaml and env_py.env file to fit your FHIR database.
 
-### Outputs:
+### Expected Data Inputs:
 
-- Performance metrics
-- DataFrames with predicted and actual CRP values
+The queried clinical data is expected to be returned in JSON using the FHIR (Fast Healthcare Interoperability Resources) standard.
+
+### Expected Model Outputs:
+
+- CSV-File of Performance metrics
+- CSV-File with predicted and actual CRP values
 
 ## Introduction
 
