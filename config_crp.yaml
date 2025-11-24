@@ -9,6 +9,9 @@ authentication_method:
 - 'basic_auth'
 #- 'token'
 
+# Adapt the max. allowed number of queried cases per resource (in case of server-side restrictions resulting in timeouts)
+fhir_count: 1000
+
 
 # Adapt the label for CRP that is used in the parameter code of the Observation resource
 crp_laboratory_code:
