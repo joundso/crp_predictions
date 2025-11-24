@@ -87,7 +87,7 @@ The patient cohort is defined according to the following criteria:
 
 ## Authentication config in env_py.env
 
-There are two authentication methods supported by the script:
+Please copy and use env_py.env.template. There are two authentication methods supported by the script:
 - basic_auth
 - token (e.g. with a separate auth server / API gateway)
 
