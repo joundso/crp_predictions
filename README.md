@@ -85,6 +85,50 @@ The patient cohort is defined according to the following criteria:
 - Docker must be installed on your system: [Install Docker](https://docs.docker.com/get-docker/)
 - The required Python environment is already included in the Docker image, so no additional installation steps are necessary.
 
+## Authentication config in env_py.env
+
+There are two authentication methods supported by the script:
+- basic_auth
+- token (e.g. with a separate auth server / API gateway)
+
+Depending on the method, different URL variables from env_py.env are used.
+The authentication method is defined in the YAML file.
+
+When Basic Authentication is used:
+```
+authentication_method:
+  - 'basic_auth'
+```
+
+In this case, the following variables are used:
+- FHIR_USER / FHIR_PASSWORD
+
+Username and password for HTTP Basic Auth (read from environment variables because auth_method="env").
+- FHIR_SERVER_URL
+
+Base URL of the FHIR server, e.g.:
+https://my-server.com/fhir or
+https://my-server.com/app/FHIR/r4/
+
+When token Authentication is used:
+```
+authentication_method:
+  - 'token'
+```
+
+In this case, the variables mean:
+- SEARCH_URL
+
+FHIR base URL, e.g.:
+https://my-server.com/app/FHIR/r4/
+- BASIC_AUTH
+
+URL of the auth endpoint used to obtain the token, e.g.:
+https://my-server.com:8443/app/Auth/v1/basicAuth
+- REFRESH_AUTH
+
+URL of the token refresh endpoint (if a separate endpoint exists), e.g.:
+https://my-server.com:8443/app/Auth/v1/refreshToken
 
 ## Project Structure
 
