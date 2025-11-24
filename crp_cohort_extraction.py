@@ -68,7 +68,8 @@ encounter_stay_type_field = encounter_stay_type_field[0]
 encounter_stay_type_content = config['encounter_stay_type_content']
 patients_birthdate_field = config['patients_birthdate_field']
 patients_birthdate_field = patients_birthdate_field[0]
-
+fhir_count = config.get("fhir_count", 100)   # default to 1000 if missing
+fhir_count = str(fhir_count)  
 
 load_dotenv(dotenv_path="/app/env_py.env")  # or relative: load_dotenv(".env")
 
@@ -112,8 +113,8 @@ if diagnosis_type_ref == ['condition']:
     dr_bundles = search.trade_rows_for_bundles(
         conditions,
         resource_type="Condition",
-        #request_params={"_count": "10000","_sort":'_id',"recorded-date": "ge2025-01"},
-        request_params={"_count": "10000","_sort":'_id',"recorded-date": "ge2022-01","category":"ADM"},
+        #request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2025-01"},
+        request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2022-01","category":"ADM"},
         df_constraints={"code": "icd-10"})
     conditions_df = search.bundles_to_dataframe(bundles=dr_bundles)
     print ('FHIR Query #1: Number of unique encounters with filtered ICD-10 codes: ', conditions_df['encounter_reference'].nunique())
@@ -121,8 +122,8 @@ else:
     dr_bundles = search.trade_rows_for_bundles(
         conditions,
         resource_type="Condition",
-        request_params={"_count": "10000","_sort":'_id',"recorded-date": "ge2022-01"},
-        #request_params={"_count": "10000","_sort":'_id',"recorded-date": "ge2025-01","category":"ENT"},
+        request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2022-01"},
+        #request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2025-01","category":"ENT"},
         df_constraints={"code": "icd-10"})
     conditions_df = search.bundles_to_dataframe(bundles=dr_bundles)
     print ('FHIR Query #1 (Conditions): Number of unique encounters in conditions with filtered ICD-10 codes: ', conditions_df['encounter_reference'].nunique())
@@ -139,8 +140,8 @@ conditions_df_unique = conditions_df.dropna(subset=['encounter_reference']).drop
 dr_bundles = search.trade_rows_for_bundles(
     conditions_df_unique,
     resource_type="Encounter",
-    #request_params={"_count": "10000","_sort":'_id',"recorded-date": "ge2025-01"},
-    request_params={"_count": "10000","_sort":'_id'},
+    #request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2025-01"},
+    request_params={"_count": fhir_count,"_sort":'_id'},
     df_constraints={"_id": "encounter_reference"}
   )
 encounters_df = search.bundles_to_dataframe(bundles=dr_bundles)
@@ -170,7 +171,7 @@ print ('Filter FHIR Query #2: Only ',encounter_stay_type_content,' encounters wi
 dr_bundles = search.trade_rows_for_bundles(
     medications,
     resource_type="Medication",
-    request_params={"_count": "10000", "_sort": "_id"},
+    request_params={"_count": fhir_count, "_sort": "_id"},
     df_constraints={"code": "atc_codes"}
 )
       # Convert the returned bundles to a dataframe
@@ -188,7 +189,7 @@ print ('FHIR Query #3: Number of medication references with filtered ATC codes: 
 dr_bundles = search.trade_rows_for_bundles(
     encounters_df,
     resource_type="MedicationAdministration",
-    request_params={"_count": "10000", "_sort": "_id"},
+    request_params={"_count": fhir_count, "_sort": "_id"},
     df_constraints={"context": "id"})
       # Convert the returned bundles to a dataframe
 medications_admin_df = search.bundles_to_dataframe(bundles=dr_bundles)
@@ -213,7 +214,7 @@ medications_admin_df_unique_subject = medications_admin_df.drop_duplicates(subse
 dr_bundles = search.trade_rows_for_bundles(
     medications_admin_df_unique_subject,
     resource_type="Patient",
-    request_params={"_count": "10000", "_sort": "_id"},
+    request_params={"_count": fhir_count, "_sort": "_id"},
     df_constraints={"_id": "subject_reference"},
   )
 patients_df = search.bundles_to_dataframe(
@@ -253,8 +254,8 @@ print ('Filter FHIR Query #5: Filter encounters for patients >= 18 at start of e
 dr_bundles = search.trade_rows_for_bundles(
   encounters_df,
   resource_type="Observation",
-  #request_params={"category": "26436-6","_sort":"date","_count": "10000"},
-  request_params={"_count": "10000","_sort":"date", "code": crp_laboratory_code},
+  #request_params={"category": "26436-6","_sort":"date","_count": fhir_count},
+  request_params={"_count": fhir_count,"_sort":"date", "code": crp_laboratory_code},
   df_constraints={"encounter": "id"}
 )
 # Convert the returned bundles to a dataframe
