@@ -23,6 +23,11 @@ docker pull gernotpuc/crp-pipeline:script_v6
 Replace the local paths below with your actual file locations:
 
 ```bash
+## using the provided docker-compose.yml file:
+docker compose up
+
+## or run with docker run:
+```bash
 docker run \
   -v /YOUR_PATH/crp_cohort_extraction.py:/app/crp_cohort_extraction.py \
   -v /YOUR_PATH/config_crp.yaml:/app/config_crp.yaml \
