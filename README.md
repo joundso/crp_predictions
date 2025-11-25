@@ -27,7 +27,7 @@ Replace the local paths below with your actual file locations:
 docker compose up
 
 ## or run with docker run:
-```bash
+
 docker run \
   -v /YOUR_PATH/crp_cohort_extraction.py:/app/crp_cohort_extraction.py \
   -v /YOUR_PATH/config_crp.yaml:/app/config_crp.yaml \
