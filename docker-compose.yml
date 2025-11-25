@@ -1,0 +1,11 @@
+services:
+  crp-pipeline:
+    image: gernotpuc/crp-pipeline:script_v6
+    command: python crp_cohort_extraction.py --results_dir /app/results
+    volumes:
+      - ./crp_cohort_extraction.py:/app/crp_cohort_extraction.py
+      - ./config_crp.yaml:/app/config_crp.yaml
+      - ./env_py.env:/app/env_py.env
+      - ./results:/app/results
+    env_file:
+      - env_py.env
