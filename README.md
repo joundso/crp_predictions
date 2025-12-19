@@ -45,7 +45,6 @@ The queried clinical data is expected to be returned in JSON using the FHIR (Fas
 ### Expected Model Outputs:
 
 - CSV-File of Performance metrics
-- CSV-File with predicted and actual CRP values
 
 ## Introduction
 
