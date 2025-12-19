@@ -365,7 +365,7 @@ def autogluon_data_ci_regression(model_name, output_dir_forecasting, forecasting
 
     predictions_csv_path = os.path.join(output_dir_forecasting, f"{model_name}_actual_vs_predicted.csv")
     #predictions_output_df.to_csv(predictions_csv_path, index=False)
-    print(f"Actual vs. predicted values saved to {predictions_csv_path}")
+    #print(f"Actual vs. predicted values saved to {predictions_csv_path}")
     
     return predictions, actuals, train_data, test_data, merged_data
 
