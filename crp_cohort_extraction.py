@@ -403,7 +403,7 @@ def main() -> int:
             search=search,
             df=pd.DataFrame(config["icd_codes"], columns=["icd-10"]),
             resource="Condition",
-            params={"_count": fhir_count, "_sort": "_id", "recorded-date": "ge2026-01"},
+            params={"_count": fhir_count, "_sort": "_id", "recorded-date": "ge2024-01"},
             constraints={"code": "icd-10"},
             logger=logger,
             label="FHIR Query #1 Conditions",
