@@ -24,12 +24,14 @@ Replace the local paths below with your actual file locations:
 
 ```bash
 docker run \
+  -e PYTHONUNBUFFERED=1 \
   -v /YOUR_PATH/crp_cohort_extraction.py:/app/crp_cohort_extraction.py \
   -v /YOUR_PATH/config_crp.yaml:/app/config_crp.yaml \
   -v /YOUR_PATH/env_py.env:/app/env_py.env \
   -v /YOUR_PATH/results:/app/results \
   gernotpuc/crp-pipeline:script_v6 \
   python crp_cohort_extraction.py --results_dir /app/results
+
 ```
 
 Note: This setup requires that the Python script, configuration file, environment variables file, and output directory be provided at runtime using Docker's volume mounting (`-v` option). These files are not included in the Docker image.
