@@ -3,16 +3,15 @@
 
 """
 CRP Forecasting Pipeline using FHIR-Pyrate + AutoGluon.
-Now includes proper logging (console + file), with timestamps, log levels,
+Includes proper logging (console + file), with timestamps, log levels,
 and exception stack traces.
 
-Usage:
-  python crp_pipeline.py --results_dir ./results --log_level INFO
+New:
+- Configurable FHIR sorting via config.yaml key `fhir_sort`.
+  Some FHIR servers don't support `_sort`; set fhir_sort to false to disable.
 
-Notes:
-- Logs go to:
-    1) stdout (good for Docker/K8s log collectors)
-    2) <results_dir>/run.log
+Usage:
+  python crp_pipeline.py --results_dir ./results --log_level INFO --config_path config_crp.yaml
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import sys
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -39,9 +38,7 @@ from autogluon.timeseries import TimeSeriesPredictor, TimeSeriesDataFrame
 
 
 def setup_logging(results_dir: str, log_level: str = "INFO") -> logging.Logger:
-    """
-    Configure logging to both console and file, and return a module logger.
-    """
+    """Configure logging to both console and file, and return a module logger."""
     Path(results_dir).mkdir(parents=True, exist_ok=True)
 
     level = getattr(logging, log_level.upper(), None)
@@ -50,9 +47,8 @@ def setup_logging(results_dir: str, log_level: str = "INFO") -> logging.Logger:
 
     logger = logging.getLogger("crp_pipeline")
     logger.setLevel(level)
-    logger.propagate = False  # avoid duplicate logs if root logger is configured elsewhere
+    logger.propagate = False
 
-    # Clear existing handlers (important if re-imported / run in notebooks)
     if logger.handlers:
         logger.handlers.clear()
 
@@ -61,12 +57,10 @@ def setup_logging(results_dir: str, log_level: str = "INFO") -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Console handler
     sh = logging.StreamHandler(sys.stdout)
     sh.setLevel(level)
     sh.setFormatter(fmt)
 
-    # File handler
     fh = logging.FileHandler(Path(results_dir) / "run.log", encoding="utf-8")
     fh.setLevel(level)
     fh.setFormatter(fmt)
@@ -91,14 +85,41 @@ def load_config(config_path: str, logger: logging.Logger) -> Dict:
     return config
 
 
-def init_authentication(config: Dict, logger: logging.Logger) -> Pirate:
+def get_fhir_sort(config: Dict) -> bool:
+    """
+    Read fhir_sort from config.
+    Supports both:
+      fhir_sort: true
+    and:
+      fhir_sort:
+        - true
+    """
+    val = config.get("fhir_sort", True)
+    if isinstance(val, list) and val:
+        val = val[0]
+    return bool(val)
+
+
+def build_fhir_params(base: Dict, fhir_sort: bool, sort_value: str = "_id") -> Dict:
+    """
+    Build request_params dict. Adds `_sort` only if fhir_sort is True.
+    Removes any existing `_sort` if fhir_sort is False.
+    """
+    params = dict(base)
+    if fhir_sort:
+        params["_sort"] = sort_value
+    else:
+        params.pop("_sort", None)
+    return params
+
+
+def init_authentication(config: Dict, logger: logging.Logger, env_file: str = "/app/env_py.env") -> Pirate:
     """
     Initialize FHIR authentication and return a Pirate search object.
-    Expects environment variables to be present in /app/env_py.env.
+    Loads environment variables from env_file (default /app/env_py.env).
     """
-    env_path = "/app/env_py.env"
-    load_dotenv(dotenv_path=env_path)
-    logger.info("Loaded environment variables from %s (if present)", env_path)
+    loaded = load_dotenv(dotenv_path=env_file)
+    logger.info("Loaded environment variables from %s (success=%s)", env_file, loaded)
 
     auth_method = config["authentication_method"][0]
     logger.info("Authentication method: %s", auth_method)
@@ -177,14 +198,11 @@ def fetch_fhir_dataframe(
         label_prefix, type(out).__name__
     )
 
-    # Log helpful (but safe) diagnostics
     if isinstance(out, dict):
         logger.warning("%sPayload keys: %s", label_prefix, sorted(out.keys()))
-        # If it looks like an OperationOutcome (FHIR error), surface it
         if out.get("resourceType") == "OperationOutcome":
             issues = out.get("issue", [])
-            # Keep it short; don't spam logs
-            logger.error("%sFHIR OperationOutcome issues (truncated): %s", label_prefix, str(issues[:2000]))
+            logger.error("%sFHIR OperationOutcome issues (truncated): %s", label_prefix, str(issues)[:2000])
         else:
             logger.debug("%sPayload (truncated): %s", label_prefix, str(out)[:2000])
     else:
@@ -193,44 +211,47 @@ def fetch_fhir_dataframe(
     return pd.DataFrame()
 
 
-
 # -------------------------------------------------------------------------
 # Data Processing Functions
 # -------------------------------------------------------------------------
 
 
-def compute_patient_age(encounters_df: pd.DataFrame, patients_df: pd.DataFrame, birthdate_field: str, logger: logging.Logger) -> pd.DataFrame:
+def compute_patient_age(
+    encounters_df: pd.DataFrame,
+    patients_df: pd.DataFrame,
+    birthdate_field: str,
+    logger: logging.Logger
+) -> pd.DataFrame:
     """Attach patient age to encounters without clobbering encounter 'id' column."""
     logger.info("Computing patient ages using birthdate field '%s'", birthdate_field)
 
     enc = encounters_df.copy()
     pat = patients_df.copy()
 
-    # Patients: parse birthdate
     if birthdate_field not in pat.columns:
-        raise KeyError(f"Patient birthdate field '{birthdate_field}' not found in patients_df columns: {list(pat.columns)}")
+        raise KeyError(
+            f"Patient birthdate field '{birthdate_field}' not found in patients_df columns: {list(pat.columns)}"
+        )
     pat[birthdate_field] = pd.to_datetime(pat[birthdate_field], errors="coerce")
 
-    # Encounters: parse start time
     if "period_start" not in enc.columns:
         raise KeyError(f"'period_start' not found in encounters_df columns: {list(enc.columns)}")
     enc["period_start"] = pd.to_datetime(enc["period_start"], utc=True, errors="coerce").dt.tz_localize(None)
 
-    # Build patient identifier to join on
     if "subject_reference" not in enc.columns:
         raise KeyError(f"'subject_reference' not found in encounters_df columns: {list(enc.columns)}")
     enc["subject_identifier"] = enc["subject_reference"].astype(str).str.replace("Patient/", "", regex=False)
 
-    # Build a lookup: patient_id -> birthdate
-    pat_birth = pat.set_index("id")[birthdate_field]  # uses Patient.id intentionally
+    if "id" not in pat.columns:
+        raise KeyError(f"patients_df missing 'id' column. Columns: {list(pat.columns)}")
+
+    pat_birth = pat.set_index("id")[birthdate_field]
     enc["birthDate"] = enc["subject_identifier"].map(pat_birth)
 
-    # Age calculation
     enc["age"] = (enc["period_start"] - enc["birthDate"]).dt.days // 365
 
     logger.info("Computed ages for %d encounter rows", len(enc))
     return enc
-
 
 
 def resample_time_series(
@@ -265,7 +286,6 @@ def resample_time_series(
         resampled["encounter_reference"] = group["encounter_reference"].iloc[0]
         resampled.reset_index(inplace=True)
 
-        # Imputation
         if impute == "interpolate":
             resampled[value_col] = resampled[value_col].interpolate(method="linear")
         elif impute == "forward_fill":
@@ -273,7 +293,6 @@ def resample_time_series(
         elif impute in ("none", "", None):
             pass
         else:
-            # keep behavior explicit
             raise ValueError(f"Unknown impute strategy: {impute!r}")
 
         return resampled
@@ -281,18 +300,25 @@ def resample_time_series(
     df = df.groupby("encounter_reference", group_keys=False).apply(process_group).reset_index(drop=True)
     df = df.sort_values(["encounter_reference", "effectiveDateTime"])
 
-    # keep only last max_train_length points per encounter
     df = df.groupby("encounter_reference", group_keys=False).tail(max_train_length)
 
     counts = df["encounter_reference"].value_counts()
     valid_ids = counts[counts >= min_length].index
     out = df[df["encounter_reference"].isin(valid_ids)]
 
-    logger.info("After filtering: %d rows across %d encounters (min_length=%d)", len(out), out["encounter_reference"].nunique(), min_length)
+    logger.info(
+        "After filtering: %d rows across %d encounters (min_length=%d)",
+        len(out), out["encounter_reference"].nunique(), min_length
+    )
     return out
 
 
-def compute_bootstrap_metrics(actual: np.ndarray, predicted: np.ndarray, n_bootstrap: int = 1000, ci_percentile: int = 95) -> Dict[str, Tuple[float, float, float]]:
+def compute_bootstrap_metrics(
+    actual: np.ndarray,
+    predicted: np.ndarray,
+    n_bootstrap: int = 1000,
+    ci_percentile: int = 95
+) -> Dict[str, Tuple[float, float, float]]:
     """Compute bootstrap confidence intervals for regression metrics."""
     mae_list, mse_list, rmse_list, mape_list, smape_list = [], [], [], [], []
 
@@ -306,7 +332,6 @@ def compute_bootstrap_metrics(actual: np.ndarray, predicted: np.ndarray, n_boots
         mse = np.mean((a - p) ** 2)
         rmse = np.sqrt(mse)
 
-        # Avoid divide-by-zero blowups
         denom = np.where(np.abs(a) == 0, np.nan, np.abs(a))
         mape = np.nanmean(np.abs(a - p) / denom) * 100
 
@@ -359,9 +384,8 @@ def autogluon_ci_prediction(
     df = df.dropna(subset=["effectiveDateTime"])
     df["effectiveDateTime"] = df["effectiveDateTime"].dt.tz_localize(None)
 
-    # Split last N points for test set (per encounter)
     train_parts, test_parts = [], []
-    for enc_id, g in df.groupby("encounter_reference"):
+    for _, g in df.groupby("encounter_reference"):
         test_rows = g.nlargest(prediction_length, "effectiveDateTime")
         train_rows = g.drop(test_rows.index)
         if len(train_rows) == 0 or len(test_rows) == 0:
@@ -375,8 +399,12 @@ def autogluon_ci_prediction(
     train_df = pd.concat(train_parts).sort_values(["encounter_reference", "effectiveDateTime"])
     test_df = pd.concat(test_parts).sort_values(["encounter_reference", "effectiveDateTime"])
 
-    train_ts = TimeSeriesDataFrame.from_data_frame(train_df, id_column="encounter_reference", timestamp_column="effectiveDateTime")
-    test_ts = TimeSeriesDataFrame.from_data_frame(test_df, id_column="encounter_reference", timestamp_column="effectiveDateTime")
+    train_ts = TimeSeriesDataFrame.from_data_frame(
+        train_df, id_column="encounter_reference", timestamp_column="effectiveDateTime"
+    )
+    test_ts = TimeSeriesDataFrame.from_data_frame(
+        test_df, id_column="encounter_reference", timestamp_column="effectiveDateTime"
+    )
 
     preds = predictor.predict(train_ts, model=model_name)[["mean", "0.1", "0.9"]]
     merged = test_ts.join(preds, how="inner")
@@ -389,7 +417,6 @@ def autogluon_ci_prediction(
 
     metrics = compute_bootstrap_metrics(actual, predicted, n_bootstrap=n_bootstrap)
 
-    # Write metrics to CSV
     out_df = pd.DataFrame(
         [{"Metric": m.upper(), "Estimate": v[0], "CI_Lower": v[1], "CI_Upper": v[2]} for m, v in metrics.items()]
     )
@@ -410,6 +437,7 @@ def main() -> int:
     parser.add_argument("--results_dir", default="./results", help="Directory for outputs + logs")
     parser.add_argument("--log_level", default="INFO", help="DEBUG|INFO|WARNING|ERROR|CRITICAL")
     parser.add_argument("--config_path", default="config_crp.yaml", help="Path to YAML config")
+    parser.add_argument("--env_file", default="/app/env_py.env", help="Path to env file (Docker: /app/env_py.env)")
     args = parser.parse_args()
 
     logger = setup_logging(args.results_dir, args.log_level)
@@ -420,7 +448,10 @@ def main() -> int:
 
     try:
         config = load_config(args.config_path, logger)
-        search = init_authentication(config, logger)
+        fhir_sort = get_fhir_sort(config)
+        logger.info("FHIR sorting enabled (fhir_sort): %s", fhir_sort)
+
+        search = init_authentication(config, logger, env_file=args.env_file)
         fhir_count = str(config.get("fhir_count", 100))
         logger.info("FHIR _count parameter: %s", fhir_count)
 
@@ -432,66 +463,89 @@ def main() -> int:
             search=search,
             df=pd.DataFrame(config["icd_codes"], columns=["icd-10"]),
             resource="Condition",
-            params={"_count": fhir_count, "_sort": "_id", "recorded-date": "ge2024-01"},
+            params=build_fhir_params(
+                {"_count": fhir_count, "recorded-date": "ge2024-01"},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
             constraints={"code": "icd-10"},
             logger=logger,
             label="FHIR Query #1 Conditions",
         )
 
-        if not isinstance(conditions_df, pd.DataFrame):
-            logger.error("FHIR Query #1 Conditions did not return a DataFrame (got %s)", type(conditions_df))
-            raise TypeError("FHIR Query #1 Conditions failed: expected DataFrame")
-
-
         if conditions_df.empty:
             logger.warning("FHIR Query #1 Conditions returned 0 rows. Stopping pipeline early.")
-            return 0 
+            return 0
 
         if "encounter_reference" not in conditions_df.columns:
+            logger.error("Conditions columns: %s", list(conditions_df.columns))
             raise KeyError("conditions_df is missing 'encounter_reference' column from FHIR conversion.")
 
         conditions_unique = (
             conditions_df.dropna(subset=["encounter_reference"])
             .drop_duplicates("encounter_reference")
         )
-        logger.info("FHIR Query #1: unique encounters=%d", conditions_unique["encounter_reference"].nunique())
+        logger.info(
+            "FHIR Query #1: unique encounters=%d",
+            conditions_unique["encounter_reference"].nunique()
+        )
 
         encounters_df = fetch_fhir_dataframe(
             search=search,
             df=conditions_unique,
             resource="Encounter",
-            params={"_count": fhir_count, "_sort": "_id"},
+            params=build_fhir_params(
+                {"_count": fhir_count},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
             constraints={"_id": "encounter_reference"},
             logger=logger,
             label="FHIR Query #2 Encounters",
         )
 
+        if encounters_df.empty:
+            logger.warning("FHIR Query #2 Encounters returned 0 rows. Stopping pipeline early.")
+            return 0
+
         if "id" in encounters_df.columns:
-            logger.info("FHIR Query #2: encounters fetched=%d unique=%d", len(encounters_df), encounters_df["id"].nunique())
+            logger.info(
+                "FHIR Query #2: encounters fetched=%d unique=%d",
+                len(encounters_df), encounters_df["id"].nunique()
+            )
         else:
             logger.warning("encounters_df missing 'id' column; cannot compute unique encounter count reliably.")
 
-        # Filter encounter class & diagnosis type if present
         stay_field = config["encounter_stay_type_field"][0]
         diag_field = config["encounter_diagnosis_type_field"][0]
 
         before = len(encounters_df)
         if stay_field in encounters_df.columns:
-            # original script used 'class_code' explicitly
             if "class_code" in encounters_df.columns:
-                encounters_df = encounters_df[encounters_df["class_code"].isin(config["encounter_stay_type_content"])]
+                encounters_df = encounters_df[
+                    encounters_df["class_code"].isin(config["encounter_stay_type_content"])
+                ]
                 logger.info("Filtered encounters by class_code content; rows %d → %d", before, len(encounters_df))
             else:
-                logger.warning("stay_field '%s' present but 'class_code' column not found; skipping stay filter", stay_field)
+                logger.warning(
+                    "stay_field '%s' present but 'class_code' column not found; skipping stay filter",
+                    stay_field
+                )
         else:
             logger.info("Stay filter field '%s' not present; skipping stay filter", stay_field)
 
         before = len(encounters_df)
         if diag_field in encounters_df.columns:
-            encounters_df = encounters_df[encounters_df[diag_field].isin(config["encounter_diagnosis_type_content"])]
+            encounters_df = encounters_df[
+                encounters_df[diag_field].isin(config["encounter_diagnosis_type_content"])
+            ]
             logger.info("Filtered encounters by diagnosis field '%s'; rows %d → %d", diag_field, before, len(encounters_df))
         else:
             logger.info("Diagnosis filter field '%s' not present; skipping diagnosis filter", diag_field)
+
+        if encounters_df.empty:
+            logger.warning("Encounters became empty after filtering. Stopping pipeline early.")
+            return 0
 
         # -----------------------------------------------------------------
         # Medication Filtering
@@ -501,32 +555,59 @@ def main() -> int:
             search=search,
             df=pd.DataFrame(config["medication_codes"], columns=["atc_codes"]),
             resource="Medication",
-            params={"_count": fhir_count, "_sort": "_id"},
+            params=build_fhir_params(
+                {"_count": fhir_count},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
             constraints={"code": "atc_codes"},
             logger=logger,
             label="FHIR Query #3 Medication",
         )
+
+        if meds_df.empty:
+            logger.warning("FHIR Query #3 Medication returned 0 rows. Stopping pipeline early.")
+            return 0
+
         if "id" not in meds_df.columns:
             raise KeyError("meds_df missing 'id' column")
 
         meds_df["medication_reference"] = "Medication/" + meds_df["id"].astype(str)
-        logger.info("FHIR Query #3: medication references=%d", meds_df["medication_reference"].nunique())
+        logger.info(
+            "FHIR Query #3: medication references=%d",
+            meds_df["medication_reference"].nunique()
+        )
 
         admin_df = fetch_fhir_dataframe(
             search=search,
             df=encounters_df,
             resource="MedicationAdministration",
-            params={"_count": fhir_count, "_sort": "_id"},
+            params=build_fhir_params(
+                {"_count": fhir_count},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
             constraints={"context": "id"},
             logger=logger,
             label="FHIR Query #4 MedicationAdministration",
         )
+
+        if admin_df.empty:
+            logger.warning("FHIR Query #4 MedicationAdministration returned 0 rows. Stopping pipeline early.")
+            return 0
+
         if "medicationReference_reference" not in admin_df.columns:
             raise KeyError("admin_df missing 'medicationReference_reference' column")
 
         before = len(admin_df)
-        admin_df = admin_df[admin_df["medicationReference_reference"].isin(meds_df["medication_reference"])]
+        admin_df = admin_df[
+            admin_df["medicationReference_reference"].isin(meds_df["medication_reference"])
+        ]
         logger.info("FHIR Query #4: filtered administrations %d → %d", before, len(admin_df))
+
+        if admin_df.empty:
+            logger.warning("No MedicationAdministration rows after ATC filtering. Stopping pipeline early.")
+            return 0
 
         # -----------------------------------------------------------------
         # Patient Filtering
@@ -536,17 +617,39 @@ def main() -> int:
             search=search,
             df=admin_df.drop_duplicates("subject_reference"),
             resource="Patient",
-            params={"_count": fhir_count, "_sort": "_id"},
+            params=build_fhir_params(
+                {"_count": fhir_count},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
             constraints={"_id": "subject_reference"},
             logger=logger,
             label="FHIR Query #5 Patient",
         )
 
+        if patients_df.empty:
+            logger.warning("FHIR Query #5 Patient returned 0 rows. Stopping pipeline early.")
+            return 0
+
         birth_field = config["patients_birthdate_field"][0]
         encounters_with_age = compute_patient_age(encounters_df, patients_df, birth_field, logger)
+
         before = len(encounters_with_age)
         encounters_with_age = encounters_with_age[encounters_with_age["age"] >= 18]
-        logger.info("Filtered to age>=18: rows %d → %d (unique encounters=%d)", before, len(encounters_with_age), encounters_with_age.get("id", pd.Series()).nunique())
+
+        if "id" in encounters_with_age.columns:
+            uniq = encounters_with_age["id"].nunique()
+        else:
+            uniq = 0
+
+        logger.info(
+            "Filtered to age>=18: rows %d → %d (unique encounters=%d)",
+            before, len(encounters_with_age), uniq
+        )
+
+        if encounters_with_age.empty:
+            logger.warning("No encounters remain after age filtering. Stopping pipeline early.")
+            return 0
 
         # -----------------------------------------------------------------
         # CRP Extraction
@@ -556,11 +659,19 @@ def main() -> int:
             search=search,
             df=encounters_with_age,
             resource="Observation",
-            params={"_count": fhir_count, "_sort": "date", "code": config["crp_laboratory_code"]},
+            params=build_fhir_params(
+                {"_count": fhir_count, "code": config["crp_laboratory_code"]},
+                fhir_sort=fhir_sort,
+                sort_value="date",
+            ),
             constraints={"encounter": "id"},
             logger=logger,
             label="FHIR Query #6 CRP Observation",
         )
+
+        if crp_df.empty:
+            logger.warning("FHIR Query #6 CRP Observation returned 0 rows. Stopping pipeline early.")
+            return 0
 
         if "valueQuantity_value" not in crp_df.columns:
             raise KeyError("crp_df missing 'valueQuantity_value' column")
@@ -593,6 +704,10 @@ def main() -> int:
             logger=logger,
         )
 
+        if resampled.empty:
+            logger.warning("Resampled time series is empty. Stopping pipeline early.")
+            return 0
+
         # -----------------------------------------------------------------
         # Forecasting
         # -----------------------------------------------------------------
@@ -601,7 +716,7 @@ def main() -> int:
             output_path = os.path.join(args.results_dir, f"{model_name}_metrics.csv")
             logger.info("Running model: %s", model_name)
 
-            _metrics = autogluon_ci_prediction(
+            _ = autogluon_ci_prediction(
                 model_name=model_name,
                 output_path=output_path,
                 df=resampled,
@@ -618,7 +733,6 @@ def main() -> int:
         return 0
 
     except Exception:
-        # This logs the full stack trace to both console and run.log
         logger.exception("Pipeline failed with an unhandled exception")
         return 1
 
