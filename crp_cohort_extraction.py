@@ -6,12 +6,9 @@ CRP Forecasting Pipeline using FHIR-Pyrate + AutoGluon.
 Now includes proper logging (console + file), with timestamps, log levels,
 and exception stack traces.
 
-Usage:
-  python crp_pipeline.py --results_dir ./results --log_level INFO
-
 Notes:
 - Logs go to:
-    1) stdout (good for Docker/K8s log collectors)
+    1) stdout
     2) <results_dir>/run.log
 """
 
