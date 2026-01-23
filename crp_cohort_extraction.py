@@ -6,9 +6,12 @@ CRP Forecasting Pipeline using FHIR-Pyrate + AutoGluon.
 Now includes proper logging (console + file), with timestamps, log levels,
 and exception stack traces.
 
+Usage:
+  python crp_pipeline.py --results_dir ./results --log_level INFO
+
 Notes:
 - Logs go to:
-    1) stdout
+    1) stdout (good for Docker/K8s log collectors)
     2) <results_dir>/run.log
 """
 
@@ -147,10 +150,13 @@ def fetch_fhir_dataframe(
     logger: logging.Logger,
     label: str = "",
 ) -> pd.DataFrame:
-    """Fetch FHIR bundles and convert them to a DataFrame."""
+    """Fetch FHIR bundles and convert them to a DataFrame. Always returns a DataFrame."""
     label_prefix = f"{label}: " if label else ""
 
-    logger.info("%sFetching FHIR resource=%s params=%s constraints=%s", label_prefix, resource, params, constraints)
+    logger.info(
+        "%sFetching FHIR resource=%s params=%s constraints=%s",
+        label_prefix, resource, params, constraints
+    )
 
     bundles = search.trade_rows_for_bundles(
         df,
@@ -160,9 +166,32 @@ def fetch_fhir_dataframe(
     )
 
     out = search.bundles_to_dataframe(bundles=bundles)
-    logger.info("%sFetched %d rows for resource=%s", label_prefix, len(out), resource)
-    logger.debug("%sColumns for %s: %s", label_prefix, resource, list(out.columns))
-    return out
+
+    if isinstance(out, pd.DataFrame):
+        logger.info("%sFetched %d rows for resource=%s", label_prefix, len(out), resource)
+        logger.debug("%sColumns for %s: %s", label_prefix, resource, list(out.columns))
+        return out
+
+    logger.warning(
+        "%sExpected DataFrame from bundles_to_dataframe, got %s. Returning empty DataFrame.",
+        label_prefix, type(out).__name__
+    )
+
+    # Log helpful (but safe) diagnostics
+    if isinstance(out, dict):
+        logger.warning("%sPayload keys: %s", label_prefix, sorted(out.keys()))
+        # If it looks like an OperationOutcome (FHIR error), surface it
+        if out.get("resourceType") == "OperationOutcome":
+            issues = out.get("issue", [])
+            # Keep it short; don't spam logs
+            logger.error("%sFHIR OperationOutcome issues (truncated): %s", label_prefix, str(issues[:2000]))
+        else:
+            logger.debug("%sPayload (truncated): %s", label_prefix, str(out)[:2000])
+    else:
+        logger.debug("%sNon-dict payload (truncated): %s", label_prefix, str(out)[:2000])
+
+    return pd.DataFrame()
+
 
 
 # -------------------------------------------------------------------------
@@ -408,6 +437,15 @@ def main() -> int:
             logger=logger,
             label="FHIR Query #1 Conditions",
         )
+
+        if not isinstance(conditions_df, pd.DataFrame):
+            logger.error("FHIR Query #1 Conditions did not return a DataFrame (got %s)", type(conditions_df))
+            raise TypeError("FHIR Query #1 Conditions failed: expected DataFrame")
+
+
+        if conditions_df.empty:
+            logger.warning("FHIR Query #1 Conditions returned 0 rows. Stopping pipeline early.")
+            return 0 
 
         if "encounter_reference" not in conditions_df.columns:
             raise KeyError("conditions_df is missing 'encounter_reference' column from FHIR conversion.")
