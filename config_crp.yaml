@@ -41,7 +41,7 @@ encounter_stay_type_content:
 encounter_diagnosis_type_field:
 - 'diagnosis_use_coding_code'
 
-# Adapt the field value indicating the diagnosis type in the FHIR resource Encounter (e.g., 'ADM' for admission)
+# Adapt the field value indicating the diagnosis type in the FHIR resource Encounter. Use the code for admission diagnosis (e.g., ADM)
 encounter_diagnosis_type_content:
 - 'ADM'
 
