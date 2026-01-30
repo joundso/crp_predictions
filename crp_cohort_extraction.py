@@ -123,6 +123,16 @@ def init_authentication(config: Dict, logger: logging.Logger, env_file: str = "/
 
     auth_method = config["authentication_method"][0]
     logger.info("Authentication method: %s", auth_method)
+    
+    import requests
+    # Create a custom session for FHIR-PYrate
+    session = requests.Session()
+    verify_ssl_env = os.environ["VERIFY_SSL_ENV"]
+    # Interpret common "false" values → disable SSL verification
+    if verify_ssl_env in ("false","no","0"):
+        session.verify = False        # only for test/dev!
+    else:
+        session.verify = True         # default: verify certificates
 
     if auth_method == "basic_auth":
         try:
@@ -136,6 +146,7 @@ def init_authentication(config: Dict, logger: logging.Logger, env_file: str = "/
             auth_url=fhir_url,
             auth_type="BasicAuth",
             username=fhir_user,
+            session=session,
             auth_method="env",
         )
 
