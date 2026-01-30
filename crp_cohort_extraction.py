@@ -1,508 +1,745 @@
 #!/usr/bin/env python
-# coding: utf-8
+# -*- coding: utf-8 -*-
 
-# In[2]:
+"""
+CRP Forecasting Pipeline using FHIR-Pyrate + AutoGluon.
+Includes proper logging (console + file), with timestamps, log levels,
+and exception stack traces.
 
+New:
+- Configurable FHIR sorting via config.yaml key `fhir_sort`.
+  Some FHIR servers don't support `_sort`; set fhir_sort to false to disable.
 
+Usage:
+  python crp_pipeline.py --results_dir ./results --log_level INFO --config_path config_crp.yaml
+"""
 
-from fhir_pyrate import Ahoy
-from fhir_pyrate import Pirate
+from __future__ import annotations
+
 import os
+import sys
+import argparse
+import logging
+from pathlib import Path
+from typing import Dict, Tuple
+
+import numpy as np
 import pandas as pd
 import yaml
 from dotenv import load_dotenv
-from os.path import join, dirname
-from dotenv import load_dotenv
-from datetime import datetime
-import numpy as np
-import os
-import pandas as pd
-import autogluon
-from autogluon.timeseries import TimeSeriesDataFrame, TimeSeriesPredictor
-import argparse
-import os
 
-print("Running in directory:", os.getcwd())
-print("Files in /app:", os.listdir("/app"))
-print("Is predictor.pkl there?:", os.path.exists("crp_ensemble/predictor.pkl"))
+from fhir_pyrate import Ahoy, Pirate
+from autogluon.timeseries import TimeSeriesPredictor, TimeSeriesDataFrame
 
 
-# Parse base paths
-parser = argparse.ArgumentParser()
-parser.add_argument("--results_dir", default="./results", help="Path to results folder")
-args = parser.parse_args()
+# -------------------------------------------------------------------------
+# Logging
+# -------------------------------------------------------------------------
 
 
-RESULTS_DIR = args.results_dir
+def setup_logging(results_dir: str, log_level: str = "INFO") -> logging.Logger:
+    """Configure logging to both console and file, and return a module logger."""
+    Path(results_dir).mkdir(parents=True, exist_ok=True)
+
+    level = getattr(logging, log_level.upper(), None)
+    if not isinstance(level, int):
+        raise ValueError(f"Invalid log_level '{log_level}'. Use DEBUG/INFO/WARNING/ERROR/CRITICAL.")
+
+    logger = logging.getLogger("crp_pipeline")
+    logger.setLevel(level)
+    logger.propagate = False
+
+    if logger.handlers:
+        logger.handlers.clear()
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s %(name)s [%(filename)s:%(lineno)d] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setLevel(level)
+    sh.setFormatter(fmt)
+
+    fh = logging.FileHandler(Path(results_dir) / "run.log", encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(fmt)
+
+    logger.addHandler(sh)
+    logger.addHandler(fh)
+
+    return logger
 
 
-pd.set_option('max_colwidth', None)
-pd.set_option('display.max_columns', None)
-pd.set_option('display.max_rows', None)
+# -------------------------------------------------------------------------
+# Utility Functions
+# -------------------------------------------------------------------------
 
 
-# Load the YAML config file
-with open('config_crp.yaml', 'r') as file:
-    config = yaml.safe_load(file)
-
-# Load configs
-atc_codes = config['medication_codes']
-icd_codes = config['icd_codes']
-#loinc_category_laboratory = config['loinc_category_laboratory']
-crp_laboratory_code = config['crp_laboratory_code']
-fhir_extract = config['fhir_extract']
-models_eval = config['models_eval']
-diagnosis_type_ref = config['diagnosis_type_ref']
-authentication_method = config['authentication_method']
-authentication_method = authentication_method[0]
-
-conditions = pd.DataFrame(icd_codes, columns=['icd-10'])
-medications = pd.DataFrame(atc_codes, columns=['atc_codes'])
-crp_unit = config['crp_unit']
-crp_unit = crp_unit[0]
-encounter_diagnosis_type_field = config['encounter_diagnosis_type_field']
-encounter_diagnosis_type_field = encounter_diagnosis_type_field[0]
-encounter_diagnosis_type_content = config['encounter_diagnosis_type_content']
-encounter_stay_type_field = config['encounter_stay_type_field']
-encounter_stay_type_field = encounter_stay_type_field[0]
-encounter_stay_type_content = config['encounter_stay_type_content']
-patients_birthdate_field = config['patients_birthdate_field']
-patients_birthdate_field = patients_birthdate_field[0]
-fhir_count = config.get("fhir_count", 100)   # default to 1000 if missing
-fhir_count = str(fhir_count)  
-
-load_dotenv(dotenv_path="/app/env_py.env")  # or relative: load_dotenv(".env")
+def load_config(config_path: str, logger: logging.Logger) -> Dict:
+    """Load YAML configuration."""
+    logger.info("Loading config from %s", config_path)
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    logger.debug("Config keys loaded: %s", list(config.keys()))
+    return config
 
 
+def get_fhir_sort(config: Dict) -> bool:
+    """
+    Read fhir_sort from config.
+    Supports both:
+      fhir_sort: true
+    and:
+      fhir_sort:
+        - true
+    """
+    val = config.get("fhir_sort", True)
+    if isinstance(val, list) and val:
+        val = val[0]
+    return bool(val)
 
-if authentication_method == 'basic_auth':
-    FHIR_USER = os.environ["FHIR_USER"]
-    FHIR_SERVER_URL = os.environ["FHIR_SERVER_URL"]
+
+def build_fhir_params(base: Dict, fhir_sort: bool, sort_value: str = "_id") -> Dict:
+    """
+    Build request_params dict. Adds `_sort` only if fhir_sort is True.
+    Removes any existing `_sort` if fhir_sort is False.
+    """
+    params = dict(base)
+    if fhir_sort:
+        params["_sort"] = sort_value
+    else:
+        params.pop("_sort", None)
+    return params
+
+
+def init_authentication(config: Dict, logger: logging.Logger, env_file: str = "/app/env_py.env") -> Pirate:
+    """
+    Initialize FHIR authentication and return a Pirate search object.
+    Loads environment variables from env_file (default /app/env_py.env).
+    """
+    loaded = load_dotenv(dotenv_path=env_file)
+    logger.info("Loaded environment variables from %s (success=%s)", env_file, loaded)
+
+    auth_method = config["authentication_method"][0]
+    logger.info("Authentication method: %s", auth_method)
+
+    if auth_method == "basic_auth":
+        try:
+            fhir_user = os.environ["FHIR_USER"]
+            fhir_url = os.environ["FHIR_SERVER_URL"]
+        except KeyError as e:
+            logger.error("Missing required environment variable: %s", e)
+            raise
+
+        auth = Ahoy(
+            auth_url=fhir_url,
+            auth_type="BasicAuth",
+            username=fhir_user,
+            auth_method="env",
+        )
+
+        logger.info("Initialized BasicAuth for FHIR server %s", fhir_url)
+        return Pirate(fhir_url, auth=auth, print_request_url=False)
+
+    # token-based
+    try:
+        basic_auth = os.environ["BASIC_AUTH"]
+        refresh_auth = os.environ["REFRESH_AUTH"]
+        search_url = os.environ["SEARCH_URL"]
+    except KeyError as e:
+        logger.error("Missing required environment variable: %s", e)
+        raise
+
     auth = Ahoy(
-    auth_url=FHIR_SERVER_URL,
-    auth_type="BasicAuth",
-    username=FHIR_USER,
-    auth_method="env",
-    )
-    search = Pirate(
-    FHIR_SERVER_URL,
-    auth=auth,
-    print_request_url=False,
-    )
-    
-else:
-    BASIC_AUTH = os.environ["BASIC_AUTH"]
-    REFRESH_AUTH = os.environ["REFRESH_AUTH"]
-    SEARCH_URL = os.environ["SEARCH_URL"]
-    auth = Ahoy(
-    auth_type="token",
-    auth_method="env",
-    auth_url=BASIC_AUTH,
-    refresh_url=REFRESH_AUTH,
-    )
-    
-    search = Pirate(
-    auth=auth,
-    base_url=SEARCH_URL, # e.g. "http://hapi.fhir.org/baseDstu2"
-    print_request_url=False, # If set to true, you will see all requests
+        auth_type="token",
+        auth_method="env",
+        auth_url=basic_auth,
+        refresh_url=refresh_auth,
     )
 
-#### Start with all cancer conditions (and admission diagnosis)
-# Search FHIR-resource Condition, filtered by defined ICD-10 codes and date >= 2015-01
-if diagnosis_type_ref == ['condition']:
-    dr_bundles = search.trade_rows_for_bundles(
-        conditions,
-        resource_type="Condition",
-        #request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2025-01"},
-        request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2022-01","category":"ADM"},
-        df_constraints={"code": "icd-10"})
-    conditions_df = search.bundles_to_dataframe(bundles=dr_bundles)
-    print ('FHIR Query #1: Number of unique encounters with filtered ICD-10 codes: ', conditions_df['encounter_reference'].nunique())
-else:
-    dr_bundles = search.trade_rows_for_bundles(
-        conditions,
-        resource_type="Condition",
-        request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2022-01"},
-        #request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2025-01","category":"ENT"},
-        df_constraints={"code": "icd-10"})
-    conditions_df = search.bundles_to_dataframe(bundles=dr_bundles)
-    print ('FHIR Query #1 (Conditions): Number of unique encounters in conditions with filtered ICD-10 codes: ', conditions_df['encounter_reference'].nunique())
-
-conditions_df_unique = conditions_df.dropna(subset=['encounter_reference']).drop_duplicates(subset=['encounter_reference'])
-#conditions_df_unique = conditions_df.drop_duplicates(subset=['encounter_reference'])
-#conditions_df_unique.to_csv('conditions_df_adm_unique.csv', sep = ';', index=False)
+    logger.info("Initialized token auth for base_url %s", search_url)
+    return Pirate(base_url=search_url, auth=auth, print_request_url=False)
 
 
-# In[10]:
+def fetch_fhir_dataframe(
+    search: Pirate,
+    df: pd.DataFrame,
+    resource: str,
+    params: Dict,
+    constraints: Dict,
+    logger: logging.Logger,
+    label: str = "",
+) -> pd.DataFrame:
+    """Fetch FHIR bundles and convert them to a DataFrame. Always returns a DataFrame."""
+    label_prefix = f"{label}: " if label else ""
 
-
-#### Restrict encounters with all cancer conditions to inpatients
-dr_bundles = search.trade_rows_for_bundles(
-    conditions_df_unique,
-    resource_type="Encounter",
-    #request_params={"_count": fhir_count,"_sort":'_id',"recorded-date": "ge2025-01"},
-    request_params={"_count": fhir_count,"_sort":'_id'},
-    df_constraints={"_id": "encounter_reference"}
-  )
-encounters_df = search.bundles_to_dataframe(bundles=dr_bundles)
-print ('FHIR Query #2 (Encounters): Number of unique encounters filtered by conditions: ', encounters_df['id'].nunique())
-#encounters_df.to_csv('encounters_df.csv', sep = ';', index=False)
-
-
-# In[11]:
-
-
-# Check if 'class_code' column exists and filter if it does
-if encounter_stay_type_field in encounters_df.columns:
-    encounters_df = encounters_df[encounters_df['class_code'].isin(encounter_stay_type_content)]
-
-# Check if 'diagnosis_use_coding_code' column exists and filter if it does
-if encounter_diagnosis_type_field in encounters_df.columns:
-    encounters_df = encounters_df[encounters_df[encounter_diagnosis_type_field].isin(encounter_diagnosis_type_content)]
-                                                          
-print ('Filter FHIR Query #2: Only ',encounter_stay_type_content,' encounters with ', encounter_diagnosis_type_content, ' : ', encounters_df['id'].nunique())
-                                                             
-
-
-# In[12]:
-
-
-#### Get all medication reference IDs for antibiotic ATC codes
-dr_bundles = search.trade_rows_for_bundles(
-    medications,
-    resource_type="Medication",
-    request_params={"_count": fhir_count, "_sort": "_id"},
-    df_constraints={"code": "atc_codes"}
-)
-      # Convert the returned bundles to a dataframe
-medications_df = search.bundles_to_dataframe(bundles=dr_bundles)
-medications_df['medication_reference'] = 'Medication/' + medications_df['id'].astype(str)
-print ('FHIR Query #3: Number of medication references with filtered ATC codes: ', medications_df['id'].nunique())
-
-#medications_df.to_csv('medication_references_df.csv', sep = ';', index=False)
-
-
-# In[13]:
-
-
-# Filter conditions_df by encounters in which i.v. antibiotic medications were administered
-dr_bundles = search.trade_rows_for_bundles(
-    encounters_df,
-    resource_type="MedicationAdministration",
-    request_params={"_count": fhir_count, "_sort": "_id"},
-    df_constraints={"context": "id"})
-      # Convert the returned bundles to a dataframe
-medications_admin_df = search.bundles_to_dataframe(bundles=dr_bundles)
-print ('FHIR Query #4: Number of medication administrations during filtered encounters: ', medications_admin_df['id'].nunique())
-
-#medications_admin_df.to_csv('medication_admin_df.csv', sep = ';', index=False)
-
-
-# In[14]:
-
-
-medications_admin_df = medications_admin_df[
-    medications_admin_df['medicationReference_reference'].isin(medications_df['medication_reference'])
-]
-print ('Filter FHIR Query #4: Filter medication administrations for ATC code references in medications: ', medications_admin_df['id'].nunique())
-
-
-# In[16]:
-
-
-medications_admin_df_unique_subject = medications_admin_df.drop_duplicates(subset=['subject_reference'])
-dr_bundles = search.trade_rows_for_bundles(
-    medications_admin_df_unique_subject,
-    resource_type="Patient",
-    request_params={"_count": fhir_count, "_sort": "_id"},
-    df_constraints={"_id": "subject_reference"},
-  )
-patients_df = search.bundles_to_dataframe(
-      bundles=dr_bundles,fhir_paths=["id", patients_birthdate_field])
-print ('FHIR Query #5: Number of unique patients receiving antibiotics during filtered encounters: ', patients_df['id'].nunique())
-
-
-# In[17]:
-
-
-# Exclude patients younger than 18
-patients_df[patients_birthdate_field] = pd.to_datetime(patients_df[patients_birthdate_field], errors='coerce')
-encounters_df['period_start'] = pd.to_datetime(encounters_df['period_start'], utc=True)
-encounters_df['period_start'] = encounters_df['period_start'].dt.tz_localize(None)
-encounters_df['subject_identifier'] = encounters_df['subject_reference'].str.replace('Patient/', '')
-
-# Merge the two dataframes based on a common patient identifier (assuming 'patient_id' exists in both)
-merged_df = pd.merge(encounters_df, patients_df[['id', patients_birthdate_field]], left_on='subject_identifier', right_on='id', how='left')
-# Calculate age by subtracting the birthDate from the recordedDate and dividing by 365.25 to get the number of years
-merged_df['age'] = (merged_df['period_start'] - merged_df[patients_birthdate_field]).dt.days // 365
-
-# Now, if you want to update the original conditions_df_filtered_unqiue_patients DataFrame:
-encounters_df = encounters_df.merge(
-    merged_df[['subject_identifier', 'period_start', 'age']], 
-    on=['subject_identifier', 'period_start'], 
-    how='left'
-)
-encounters_df = encounters_df[encounters_df['age'] >= 18]
-print ('Filter FHIR Query #5: Filter encounters for patients >= 18 at start of encounter: ', encounters_df['id'].nunique())
-
-
-
-# In[18]:
-
-
-# Filter CRP values
-dr_bundles = search.trade_rows_for_bundles(
-  encounters_df,
-  resource_type="Observation",
-  #request_params={"category": "26436-6","_sort":"date","_count": fhir_count},
-  request_params={"_count": fhir_count,"_sort":"date", "code": crp_laboratory_code},
-  df_constraints={"encounter": "id"}
-)
-# Convert the returned bundles to a dataframe
-crp_df = search.bundles_to_dataframe(bundles=dr_bundles)
-if crp_unit == 'mg/l':
-    crp_df['valueQuantity_value'] = crp_df['valueQuantity_value'] / 10
-print ('FHIR Query #6: Number of CRP values for patients receiving antibiotics during filtered encounters: ', crp_df['id'].nunique())
-print ('Number of unique encounters with at least one CRP value: ', crp_df['encounter_reference'].nunique())
-#crp_df.to_csv('crp_df.csv', sep = ';', index=False)
-#crp_df = pd.read_csv('crp_df.csv',sep=';')
-
-
-
-
-
-# In[35]:
-
-
-def autogluon_data_ci_regression(model_name, output_dir_forecasting, forecasting_filename,
-                                  resampled_df, predictor, prediction_length, value_to_predict, n_bootstrap=1000):
-    # Prepare recorded_time column
-    resampled_df['effectiveDateTime'] = resampled_df['effectiveDateTime'].dt.tz_localize(None)
-
-    # Build TimeSeriesDataFrame
-    train_data_covar = TimeSeriesDataFrame.from_data_frame(
-        resampled_df,
-        id_column="encounter_reference",
-        timestamp_column="effectiveDateTime"
+    logger.info(
+        "%sFetching FHIR resource=%s params=%s constraints=%s",
+        label_prefix, resource, params, constraints
     )
 
-    # Train/test split
-    def split_train_test(group):
-        test_rows = group.nlargest(prediction_length, 'effectiveDateTime')
-        train_rows = group.drop(test_rows.index)
-        return train_rows, test_rows
+    bundles = search.trade_rows_for_bundles(
+        df,
+        resource_type=resource,
+        request_params=params,
+        df_constraints=constraints,
+    )
 
-    train_list = []
-    test_list = []
-    for name, group in resampled_df.groupby('encounter_reference'):
-        train_rows, test_rows = split_train_test(group)
-        train_list.append(train_rows)
-        test_list.append(test_rows)
+    out = search.bundles_to_dataframe(bundles=bundles)
 
-    train_data = pd.concat(train_list).reset_index(drop=True).sort_values(by=['encounter_reference', 'effectiveDateTime'])
-    test_data = pd.concat(test_list).reset_index(drop=True).sort_values(by=['encounter_reference', 'effectiveDateTime'])
+    if isinstance(out, pd.DataFrame):
+        logger.info("%sFetched %d rows for resource=%s", label_prefix, len(out), resource)
+        logger.debug("%sColumns for %s: %s", label_prefix, resource, list(out.columns))
+        return out
 
-    train_data_ = train_data[['encounter_reference', 'effectiveDateTime', value_to_predict]].copy()
-    train_data_['effectiveDateTime'] = train_data_['effectiveDateTime'].dt.tz_localize(None)
+    logger.warning(
+        "%sExpected DataFrame from bundles_to_dataframe, got %s. Returning empty DataFrame.",
+        label_prefix, type(out).__name__
+    )
 
-    test_data_ = test_data[['encounter_reference', 'effectiveDateTime', value_to_predict]].copy()
-    test_data_['effectiveDateTime'] = test_data_['effectiveDateTime'].dt.tz_localize(None)
-
-    # Build TimeSeriesDataFrames
-    #train_data_.info()
-    train_data = TimeSeriesDataFrame.from_data_frame(train_data_, id_column="encounter_reference", timestamp_column="effectiveDateTime")
-    test_data = TimeSeriesDataFrame.from_data_frame(test_data_, id_column="encounter_reference", timestamp_column="effectiveDateTime")
-
-
-    # Make predictions
-    predictions = predictor.predict(train_data, model=model_name)
-    predictions_ = predictions[['mean', '0.1', '0.9']]
-
-    # Merge predictions with actuals
-    merged_data = test_data.join(predictions_, how="inner")
-    actuals = merged_data[value_to_predict].values.reshape(-1, 1)
-    predictions = merged_data['mean'].values.reshape(-1, 1)
-
-    # Bootstrapping regression metrics
-    metrics_forecasting = bootstrap_metrics_auto(actuals, predictions, n_bootstrap=n_bootstrap)
-
-    # Format forecasting metrics
-    forecasting_metrics_data = []
-    for metric, values in metrics_forecasting.items():
-        forecasting_metrics_data.append({
-            "Metric": metric.upper(),
-            "Point Estimate": values[0],
-            "95% CI Lower": values[1],
-            "95% CI Upper": values[2]
-        })
-
-    # Save forecasting metrics
-    forecasting_metrics_df = pd.DataFrame(forecasting_metrics_data)
-    os.makedirs(output_dir_forecasting, exist_ok=True)
-    forecasting_csv_path = os.path.join(output_dir_forecasting, forecasting_filename)
-    forecasting_metrics_df.to_csv(forecasting_csv_path, index=False)
-    print(f"Forecasting metrics saved to {forecasting_csv_path}")
-    
-    merged_df_reset = merged_data.reset_index()
-    print(merged_df_reset.columns)  # Debugging: inspect what columns are actually present
-
-
-    # Save actual vs predicted values
-    predictions_output_df = merged_df_reset[[
-        #'item_id',
-        #'timestamp',
-        value_to_predict,
-        'mean',
-        '0.1',
-        '0.9'
-    ]]
-    predictions_output_df.rename(columns={
-        value_to_predict: 'actual',
-        'mean': 'predicted',
-        '0.1': 'ci_lower_0.1',
-        '0.9': 'ci_upper_0.9'
-    }, inplace=True)
-
-    predictions_csv_path = os.path.join(output_dir_forecasting, f"{model_name}_actual_vs_predicted.csv")
-    predictions_output_df.to_csv(predictions_csv_path, index=False)
-    print(f"Actual vs. predicted values saved to {predictions_csv_path}")
-    
-    return predictions, actuals, train_data, test_data, merged_data
-
-
-# In[15]:
-
-
-def resample_ts(df,resample_rate,min_ts_length, imputation,max_train_length,value_to_predict):
-    df['effectiveDateTime'] = pd.to_datetime(df['effectiveDateTime'],utc=True)
-    df = df.dropna(subset=['effectiveDateTime'])
-
-    # Define the aggregation functions for numerical columns
-    #print(df.info())
-    agg_funcs = {
-            value_to_predict: 'max'
-    }
-    
-    # Define a function to resample, aggregate, and interpolate within each group
-    def resample_aggregate_and_interpolate(group):
-        group = group.set_index('effectiveDateTime')
-        resampled = group.resample(resample_rate).agg(agg_funcs)
-        resampled['encounter_reference'] = group['encounter_reference'].iloc[0]  # Add encounter_id back
-        resampled = resampled.reset_index()
-        
-        if imputation == 'interpolate':
-            # Interpolate missing values linearly within each group
-            resampled = resampled.groupby('encounter_reference').apply(
-                lambda x: x.interpolate(method='linear', limit_direction='forward')
-            ).reset_index(drop=True)
-        elif imputation == 'forward_fill':
-                # Forward fill missing values within each group
-            resampled = resampled.groupby('encounter_reference').apply(
-                lambda x: x.ffill()
-            ).reset_index(drop=True)
-            resampled = resampled.groupby('encounter_reference').apply(
-                lambda x: x.bfill()
-            ).reset_index(drop=True)
-            resampled = resampled.fillna(0)
+    if isinstance(out, dict):
+        logger.warning("%sPayload keys: %s", label_prefix, sorted(out.keys()))
+        if out.get("resourceType") == "OperationOutcome":
+            issues = out.get("issue", [])
+            logger.error("%sFHIR OperationOutcome issues (truncated): %s", label_prefix, str(issues)[:2000])
         else:
+            logger.debug("%sPayload (truncated): %s", label_prefix, str(out)[:2000])
+    else:
+        logger.debug("%sNon-dict payload (truncated): %s", label_prefix, str(out)[:2000])
+
+    return pd.DataFrame()
+
+
+# -------------------------------------------------------------------------
+# Data Processing Functions
+# -------------------------------------------------------------------------
+
+
+def compute_patient_age(
+    encounters_df: pd.DataFrame,
+    patients_df: pd.DataFrame,
+    birthdate_field: str,
+    logger: logging.Logger
+) -> pd.DataFrame:
+    """Attach patient age to encounters without clobbering encounter 'id' column."""
+    logger.info("Computing patient ages using birthdate field '%s'", birthdate_field)
+
+    enc = encounters_df.copy()
+    pat = patients_df.copy()
+
+    if birthdate_field not in pat.columns:
+        raise KeyError(
+            f"Patient birthdate field '{birthdate_field}' not found in patients_df columns: {list(pat.columns)}"
+        )
+    pat[birthdate_field] = pd.to_datetime(pat[birthdate_field], errors="coerce")
+
+    if "period_start" not in enc.columns:
+        raise KeyError(f"'period_start' not found in encounters_df columns: {list(enc.columns)}")
+    enc["period_start"] = pd.to_datetime(enc["period_start"], utc=True, errors="coerce").dt.tz_localize(None)
+
+    if "subject_reference" not in enc.columns:
+        raise KeyError(f"'subject_reference' not found in encounters_df columns: {list(enc.columns)}")
+    enc["subject_identifier"] = enc["subject_reference"].astype(str).str.replace("Patient/", "", regex=False)
+
+    if "id" not in pat.columns:
+        raise KeyError(f"patients_df missing 'id' column. Columns: {list(pat.columns)}")
+
+    pat_birth = pat.set_index("id")[birthdate_field]
+    enc["birthDate"] = enc["subject_identifier"].map(pat_birth)
+
+    enc["age"] = (enc["period_start"] - enc["birthDate"]).dt.days // 365
+
+    logger.info("Computed ages for %d encounter rows", len(enc))
+    return enc
+
+
+def resample_time_series(
+    df: pd.DataFrame,
+    rate: str,
+    min_length: int,
+    impute: str,
+    max_train_length: int,
+    value_col: str,
+    logger: logging.Logger,
+) -> pd.DataFrame:
+    """Resample CRP values per encounter and filter short time series."""
+    logger.info(
+        "Resampling time series: rate=%s min_length=%d impute=%s max_train_length=%d value_col=%s",
+        rate, min_length, impute, max_train_length, value_col
+    )
+
+    df = df.copy()
+    df["effectiveDateTime"] = pd.to_datetime(df["effectiveDateTime"], utc=True, errors="coerce")
+    before = len(df)
+    df = df.dropna(subset=["effectiveDateTime"])
+    logger.info("Dropped %d rows with missing/invalid effectiveDateTime", before - len(df))
+
+    if value_col not in df.columns:
+        raise KeyError(f"Value column '{value_col}' not found in CRP dataframe columns: {list(df.columns)}")
+
+    agg = {value_col: "max"}
+
+    def process_group(group: pd.DataFrame) -> pd.DataFrame:
+        group = group.set_index("effectiveDateTime")
+        resampled = group.resample(rate).agg(agg)
+        resampled["encounter_reference"] = group["encounter_reference"].iloc[0]
+        resampled.reset_index(inplace=True)
+
+        if impute == "interpolate":
+            resampled[value_col] = resampled[value_col].interpolate(method="linear")
+        elif impute == "forward_fill":
+            resampled[value_col] = resampled[value_col].ffill().bfill()
+        elif impute in ("none", "", None):
             pass
+        else:
+            raise ValueError(f"Unknown impute strategy: {impute!r}")
 
         return resampled
-    
-    # Apply the function to each group and combine results
-    resampled_df = df.groupby('encounter_reference').apply(resample_aggregate_and_interpolate).reset_index(drop=True)
 
-    data_sorted = resampled_df.sort_values(by=['encounter_reference', 'effectiveDateTime'])
-    
-    # Group by 'encounter_id' and get the last 10 rows for each group
-    data_recent = data_sorted.groupby('encounter_reference').tail(max_train_length)
+    df = df.groupby("encounter_reference", group_keys=False).apply(process_group).reset_index(drop=True)
+    df = df.sort_values(["encounter_reference", "effectiveDateTime"])
 
-    # Reset index if needed
-    resampled_df = data_recent.reset_index(drop=True)
-    resampled_df = resampled_df[resampled_df[value_to_predict].notna()]
+    df = df.groupby("encounter_reference", group_keys=False).tail(max_train_length)
 
-    #resampled_df = resampled_df.dropna(subset=['crp'])
-    # Filter out encounter_ids with less than n data points
-    valid_encounters = resampled_df['encounter_reference'].value_counts()
-    valid_encounters = valid_encounters[valid_encounters >= min_ts_length].index
-    resampled_df = resampled_df[resampled_df['encounter_reference'].isin(valid_encounters)]
-    # Calculate mean and standard deviation of imputations
-    #imputation_values = list(imputation_counts.values())
-    #mean_imputations = np.mean(imputation_values)
-    #std_imputations = np.std(imputation_values)
+    counts = df["encounter_reference"].value_counts()
+    valid_ids = counts[counts >= min_length].index
+    out = df[df["encounter_reference"].isin(valid_ids)]
 
-    # Print the statistics
-    #print(f"Mean number of imputations per encounter_id: {mean_imputations}")
-    #print(f"Standard deviation of imputations per encounter_id: {std_imputations}")
-    return resampled_df
+    logger.info(
+        "After filtering: %d rows across %d encounters (min_length=%d)",
+        len(out), out["encounter_reference"].nunique(), min_length
+    )
+    return out
 
 
-# In[37]:
+def compute_bootstrap_metrics(
+    actual: np.ndarray,
+    predicted: np.ndarray,
+    n_bootstrap: int = 1000,
+    ci_percentile: int = 95
+) -> Dict[str, Tuple[float, float, float]]:
+    """Compute bootstrap confidence intervals for regression metrics."""
+    mae_list, mse_list, rmse_list, mape_list, smape_list = [], [], [], [], []
 
-
-def bootstrap_metrics_auto(actual_values, predicted_values, n_bootstrap=1000, ci_percentile=95):
-    # Initialize arrays to store metrics across bootstraps
-    mae_bootstrap = []
-    mse_bootstrap = []
-    rmse_bootstrap = []
-    mape_bootstrap = []
-    smape_bootstrap = []
-
-    n_samples = len(actual_values)
-
+    n = len(actual)
     for _ in range(n_bootstrap):
-        # Sample with replacement
-        resample_indices = np.random.choice(np.arange(n_samples), size=n_samples, replace=True)
-        actual_resample = np.array([actual_values[i] for i in resample_indices])
-        predicted_resample = np.array([predicted_values[i] for i in resample_indices])
+        idx = np.random.choice(n, n, replace=True)
+        a = actual[idx]
+        p = predicted[idx]
 
-        # Calculate metrics for this bootstrap sample
-        mae = np.mean(np.abs(actual_resample - predicted_resample))
-        mse = np.mean((actual_resample - predicted_resample) ** 2)
+        mae = np.mean(np.abs(a - p))
+        mse = np.mean((a - p) ** 2)
         rmse = np.sqrt(mse)
-        mape = np.mean(np.abs((actual_resample - predicted_resample) / actual_resample)) * 100
-        smape = np.mean(np.abs(actual_resample - predicted_resample) / (np.abs(actual_resample) + np.abs(predicted_resample))) * 100
 
-        # Append the results
-        mae_bootstrap.append(mae)
-        mse_bootstrap.append(mse)
-        rmse_bootstrap.append(rmse)
-        mape_bootstrap.append(mape)
-        smape_bootstrap.append(smape)
+        denom = np.where(np.abs(a) == 0, np.nan, np.abs(a))
+        mape = np.nanmean(np.abs(a - p) / denom) * 100
 
-    # Calculate mean and confidence intervals
-    metrics = {
-        "mae": (np.mean(mae_bootstrap), np.percentile(mae_bootstrap, (100 - ci_percentile) / 2), np.percentile(mae_bootstrap, 100 - (100 - ci_percentile) / 2)),
-        "mse": (np.mean(mse_bootstrap), np.percentile(mse_bootstrap, (100 - ci_percentile) / 2), np.percentile(mse_bootstrap, 100 - (100 - ci_percentile) / 2)),
-        "rmse": (np.mean(rmse_bootstrap), np.percentile(rmse_bootstrap, (100 - ci_percentile) / 2), np.percentile(rmse_bootstrap, 100 - (100 - ci_percentile) / 2)),
-        "mape": (np.mean(mape_bootstrap), np.percentile(mape_bootstrap, (100 - ci_percentile) / 2), np.percentile(mape_bootstrap, 100 - (100 - ci_percentile) / 2)),
-        "smape": (np.mean(smape_bootstrap), np.percentile(smape_bootstrap, (100 - ci_percentile) / 2), np.percentile(smape_bootstrap, 100 - (100 - ci_percentile) / 2)),
+        smape_denom = (np.abs(a) + np.abs(p))
+        smape_denom = np.where(smape_denom == 0, np.nan, smape_denom)
+        smape = np.nanmean(np.abs(a - p) / smape_denom) * 100
+
+        mae_list.append(mae)
+        mse_list.append(mse)
+        rmse_list.append(rmse)
+        mape_list.append(mape)
+        smape_list.append(smape)
+
+    def ci(values):
+        return (
+            float(np.nanmean(values)),
+            float(np.nanpercentile(values, (100 - ci_percentile) / 2)),
+            float(np.nanpercentile(values, 100 - (100 - ci_percentile) / 2)),
+        )
+
+    return {
+        "mae": ci(mae_list),
+        "mse": ci(mse_list),
+        "rmse": ci(rmse_list),
+        "mape": ci(mape_list),
+        "smape": ci(smape_list),
     }
+
+
+# -------------------------------------------------------------------------
+# AutoGluon Forecasting Function
+# -------------------------------------------------------------------------
+
+
+def autogluon_ci_prediction(
+    model_name: str,
+    output_path: str,
+    df: pd.DataFrame,
+    predictor: TimeSeriesPredictor,
+    prediction_length: int,
+    target_col: str,
+    logger: logging.Logger,
+    n_bootstrap: int = 1000,
+) -> Dict[str, Tuple[float, float, float]]:
+    """Generate predictions with confidence intervals and write metrics CSV."""
+    logger.info("Forecasting with model=%s prediction_length=%d", model_name, prediction_length)
+
+    df = df.copy()
+    df["effectiveDateTime"] = pd.to_datetime(df["effectiveDateTime"], utc=True, errors="coerce")
+    df = df.dropna(subset=["effectiveDateTime"])
+    df["effectiveDateTime"] = df["effectiveDateTime"].dt.tz_localize(None)
+
+    train_parts, test_parts = [], []
+    for _, g in df.groupby("encounter_reference"):
+        test_rows = g.nlargest(prediction_length, "effectiveDateTime")
+        train_rows = g.drop(test_rows.index)
+        if len(train_rows) == 0 or len(test_rows) == 0:
+            continue
+        train_parts.append(train_rows)
+        test_parts.append(test_rows)
+
+    if not train_parts or not test_parts:
+        raise ValueError("No usable train/test splits produced. Check time series length and prediction_length.")
+
+    train_df = pd.concat(train_parts).sort_values(["encounter_reference", "effectiveDateTime"])
+    test_df = pd.concat(test_parts).sort_values(["encounter_reference", "effectiveDateTime"])
+
+    train_ts = TimeSeriesDataFrame.from_data_frame(
+        train_df, id_column="encounter_reference", timestamp_column="effectiveDateTime"
+    )
+    test_ts = TimeSeriesDataFrame.from_data_frame(
+        test_df, id_column="encounter_reference", timestamp_column="effectiveDateTime"
+    )
+
+    preds = predictor.predict(train_ts, model=model_name)[["mean", "0.1", "0.9"]]
+    merged = test_ts.join(preds, how="inner")
+
+    actual = merged[target_col].to_numpy().reshape(-1)
+    predicted = merged["mean"].to_numpy().reshape(-1)
+
+    if len(actual) == 0:
+        raise ValueError("Merged test/prediction set is empty; cannot compute metrics.")
+
+    metrics = compute_bootstrap_metrics(actual, predicted, n_bootstrap=n_bootstrap)
+
+    out_df = pd.DataFrame(
+        [{"Metric": m.upper(), "Estimate": v[0], "CI_Lower": v[1], "CI_Upper": v[2]} for m, v in metrics.items()]
+    )
+    Path(os.path.dirname(output_path)).mkdir(parents=True, exist_ok=True)
+    out_df.to_csv(output_path, index=False)
+    logger.info("Saved metrics CSV: %s", output_path)
 
     return metrics
 
 
-
-######## Start the predictions here
-predictor = TimeSeriesPredictor.load("crp_ensemble",require_version_match=False)
-
-
+# -------------------------------------------------------------------------
+# Main Entry Point
+# -------------------------------------------------------------------------
 
 
-resample_rate = '1d'
-min_ts_length = 4
-imputation = 'forward_fill'
-max_train_length = 14
-value_to_predict = 'valueQuantity_value'
-prediction_length = 1
-output_dir_forecasting = RESULTS_DIR
-resampled_df = resample_ts(crp_df,resample_rate,min_ts_length,imputation,max_train_length,value_to_predict)
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--results_dir", default="./results", help="Directory for outputs + logs")
+    parser.add_argument("--log_level", default="INFO", help="DEBUG|INFO|WARNING|ERROR|CRITICAL")
+    parser.add_argument("--config_path", default="config_crp.yaml", help="Path to YAML config")
+    parser.add_argument("--env_file", default="/app/env_py.env", help="Path to env file (Docker: /app/env_py.env)")
+    args = parser.parse_args()
+
+    logger = setup_logging(args.results_dir, args.log_level)
+
+    logger.info("Starting CRP pipeline")
+    logger.info("Working directory: %s", os.getcwd())
+    logger.info("Results directory: %s", os.path.abspath(args.results_dir))
+
+    try:
+        config = load_config(args.config_path, logger)
+        fhir_sort = get_fhir_sort(config)
+        logger.info("FHIR sorting enabled (fhir_sort): %s", fhir_sort)
+
+        search = init_authentication(config, logger, env_file=args.env_file)
+        fhir_count = str(config.get("fhir_count", 100))
+        logger.info("FHIR _count parameter: %s", fhir_count)
+
+        # -----------------------------------------------------------------
+        # FHIR Queries
+        # -----------------------------------------------------------------
+
+        conditions_df = fetch_fhir_dataframe(
+            search=search,
+            df=pd.DataFrame(config["icd_codes"], columns=["icd-10"]),
+            resource="Condition",
+            params=build_fhir_params(
+                {"_count": fhir_count, "recorded-date": "ge2024-01"},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
+            constraints={"code": "icd-10"},
+            logger=logger,
+            label="FHIR Query #1 Conditions",
+        )
+
+        if conditions_df.empty:
+            logger.warning("FHIR Query #1 Conditions returned 0 rows. Stopping pipeline early.")
+            return 0
+
+        if "encounter_reference" not in conditions_df.columns:
+            logger.error("Conditions columns: %s", list(conditions_df.columns))
+            raise KeyError("conditions_df is missing 'encounter_reference' column from FHIR conversion.")
+
+        conditions_unique = (
+            conditions_df.dropna(subset=["encounter_reference"])
+            .drop_duplicates("encounter_reference")
+        )
+        logger.info(
+            "FHIR Query #1: unique encounters=%d",
+            conditions_unique["encounter_reference"].nunique()
+        )
+
+        encounters_df = fetch_fhir_dataframe(
+            search=search,
+            df=conditions_unique,
+            resource="Encounter",
+            params=build_fhir_params(
+                {"_count": fhir_count},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
+            constraints={"_id": "encounter_reference"},
+            logger=logger,
+            label="FHIR Query #2 Encounters",
+        )
+
+        if encounters_df.empty:
+            logger.warning("FHIR Query #2 Encounters returned 0 rows. Stopping pipeline early.")
+            return 0
+
+        if "id" in encounters_df.columns:
+            logger.info(
+                "FHIR Query #2: encounters fetched=%d unique=%d",
+                len(encounters_df), encounters_df["id"].nunique()
+            )
+        else:
+            logger.warning("encounters_df missing 'id' column; cannot compute unique encounter count reliably.")
+
+        stay_field = config["encounter_stay_type_field"][0]
+        diag_field = config["encounter_diagnosis_type_field"][0]
+
+        before = len(encounters_df)
+        if stay_field in encounters_df.columns:
+            if "class_code" in encounters_df.columns:
+                encounters_df = encounters_df[
+                    encounters_df["class_code"].isin(config["encounter_stay_type_content"])
+                ]
+                logger.info("Filtered encounters by class_code content; rows %d → %d", before, len(encounters_df))
+            else:
+                logger.warning(
+                    "stay_field '%s' present but 'class_code' column not found; skipping stay filter",
+                    stay_field
+                )
+        else:
+            logger.info("Stay filter field '%s' not present; skipping stay filter", stay_field)
+
+        before = len(encounters_df)
+        if diag_field in encounters_df.columns:
+            encounters_df = encounters_df[
+                encounters_df[diag_field].isin(config["encounter_diagnosis_type_content"])
+            ]
+            logger.info("Filtered encounters by diagnosis field '%s'; rows %d → %d", diag_field, before, len(encounters_df))
+        else:
+            logger.info("Diagnosis filter field '%s' not present; skipping diagnosis filter", diag_field)
+
+        if encounters_df.empty:
+            logger.warning("Encounters became empty after filtering. Stopping pipeline early.")
+            return 0
+
+        # -----------------------------------------------------------------
+        # Medication Filtering
+        # -----------------------------------------------------------------
+
+        meds_df = fetch_fhir_dataframe(
+            search=search,
+            df=pd.DataFrame(config["medication_codes"], columns=["atc_codes"]),
+            resource="Medication",
+            params=build_fhir_params(
+                {"_count": fhir_count},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
+            constraints={"code": "atc_codes"},
+            logger=logger,
+            label="FHIR Query #3 Medication",
+        )
+
+        if meds_df.empty:
+            logger.warning("FHIR Query #3 Medication returned 0 rows. Stopping pipeline early.")
+            return 0
+
+        if "id" not in meds_df.columns:
+            raise KeyError("meds_df missing 'id' column")
+
+        meds_df["medication_reference"] = "Medication/" + meds_df["id"].astype(str)
+        logger.info(
+            "FHIR Query #3: medication references=%d",
+            meds_df["medication_reference"].nunique()
+        )
+
+        admin_df = fetch_fhir_dataframe(
+            search=search,
+            df=encounters_df,
+            resource="MedicationAdministration",
+            params=build_fhir_params(
+                {"_count": fhir_count},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
+            constraints={"context": "id"},
+            logger=logger,
+            label="FHIR Query #4 MedicationAdministration",
+        )
+
+        if admin_df.empty:
+            logger.warning("FHIR Query #4 MedicationAdministration returned 0 rows. Stopping pipeline early.")
+            return 0
+
+        if "medicationReference_reference" not in admin_df.columns:
+            raise KeyError("admin_df missing 'medicationReference_reference' column")
+
+        before = len(admin_df)
+        admin_df = admin_df[
+            admin_df["medicationReference_reference"].isin(meds_df["medication_reference"])
+        ]
+        logger.info("FHIR Query #4: filtered administrations %d → %d", before, len(admin_df))
+
+        if admin_df.empty:
+            logger.warning("No MedicationAdministration rows after ATC filtering. Stopping pipeline early.")
+            return 0
+
+        # -----------------------------------------------------------------
+        # Patient Filtering
+        # -----------------------------------------------------------------
+
+        patients_df = fetch_fhir_dataframe(
+            search=search,
+            df=admin_df.drop_duplicates("subject_reference"),
+            resource="Patient",
+            params=build_fhir_params(
+                {"_count": fhir_count},
+                fhir_sort=fhir_sort,
+                sort_value="_id",
+            ),
+            constraints={"_id": "subject_reference"},
+            logger=logger,
+            label="FHIR Query #5 Patient",
+        )
+
+        if patients_df.empty:
+            logger.warning("FHIR Query #5 Patient returned 0 rows. Stopping pipeline early.")
+            return 0
+
+        birth_field = config["patients_birthdate_field"][0]
+        encounters_with_age = compute_patient_age(encounters_df, patients_df, birth_field, logger)
+
+        before = len(encounters_with_age)
+        encounters_with_age = encounters_with_age[encounters_with_age["age"] >= 18]
+
+        if "id" in encounters_with_age.columns:
+            uniq = encounters_with_age["id"].nunique()
+        else:
+            uniq = 0
+
+        logger.info(
+            "Filtered to age>=18: rows %d → %d (unique encounters=%d)",
+            before, len(encounters_with_age), uniq
+        )
+
+        if encounters_with_age.empty:
+            logger.warning("No encounters remain after age filtering. Stopping pipeline early.")
+            return 0
+
+        # -----------------------------------------------------------------
+        # CRP Extraction
+        # -----------------------------------------------------------------
+
+        crp_df = fetch_fhir_dataframe(
+            search=search,
+            df=encounters_with_age,
+            resource="Observation",
+            params=build_fhir_params(
+                {"_count": fhir_count, "code": config["crp_laboratory_code"]},
+                fhir_sort=fhir_sort,
+                sort_value="date",
+            ),
+            constraints={"encounter": "id"},
+            logger=logger,
+            label="FHIR Query #6 CRP Observation",
+        )
+
+        if crp_df.empty:
+            logger.warning("FHIR Query #6 CRP Observation returned 0 rows. Stopping pipeline early.")
+            return 0
+
+        if "valueQuantity_value" not in crp_df.columns:
+            raise KeyError("crp_df missing 'valueQuantity_value' column")
+
+        if config["crp_unit"][0] == "mg/l":
+            logger.info("Converting CRP unit mg/l by dividing by 10")
+            crp_df["valueQuantity_value"] = crp_df["valueQuantity_value"] / 10.0
+
+        logger.info(
+            "FHIR Query #6: CRP rows=%d unique encounters with CRP=%s",
+            len(crp_df),
+            crp_df["encounter_reference"].nunique() if "encounter_reference" in crp_df.columns else "unknown",
+        )
+
+        # -----------------------------------------------------------------
+        # Time-Series Preparation
+        # -----------------------------------------------------------------
+
+        logger.info("Loading AutoGluon predictor from %s", "crp_ensemble")
+        predictor = TimeSeriesPredictor.load("crp_ensemble", require_version_match=False)
+        logger.info("Loaded predictor. Models available: %s", predictor.model_names())
+
+        resampled = resample_time_series(
+            crp_df,
+            rate="1d",
+            min_length=4,
+            impute="forward_fill",
+            max_train_length=14,
+            value_col="valueQuantity_value",
+            logger=logger,
+        )
+
+        if resampled.empty:
+            logger.warning("Resampled time series is empty. Stopping pipeline early.")
+            return 0
+
+        # -----------------------------------------------------------------
+        # Forecasting
+        # -----------------------------------------------------------------
+
+        for model_name in predictor.model_names():
+            output_path = os.path.join(args.results_dir, f"{model_name}_metrics.csv")
+            logger.info("Running model: %s", model_name)
+
+            _ = autogluon_ci_prediction(
+                model_name=model_name,
+                output_path=output_path,
+                df=resampled,
+                predictor=predictor,
+                prediction_length=1,
+                target_col="valueQuantity_value",
+                logger=logger,
+                n_bootstrap=1000,
+            )
+
+            logger.info("Finished model: %s (metrics saved)", model_name)
+
+        logger.info("All done. Thank you. You are awesome.")
+        return 0
+
+    except Exception:
+        logger.exception("Pipeline failed with an unhandled exception")
+        return 1
 
 
-for model_name in predictor.model_names():
-    print (model_name)
-    predictions, actuals, train_data, test_data, merged_data = autogluon_data_ci_regression(model_name,output_dir_forecasting,model_name,resampled_df, predictor,prediction_length,value_to_predict)
+# -------------------------------------------------------------------------
+# Run
+# -------------------------------------------------------------------------
 
-print('All done. Thank you. You are awesome.')
-
-
+if __name__ == "__main__":
+    raise SystemExit(main())

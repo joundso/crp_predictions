@@ -6,14 +6,17 @@ models_eval:
 
 # Adapt the authentication method
 authentication_method:
-- 'basic_auth'
-#- 'token'
+#- 'basic_auth'
+- 'token'
 
-# Adapt the number of search results per page (in case of server-side restrictions resulting in timeouts)
-fhir_count: 100
+# Adapt the max. allowed number of queried cases per resource (in case of server-side restrictions resulting in timeouts)
+fhir_count: 1000
 
+# Activate/de-activate sorting parameter for all FHIR queries
+fhir_sort:
+  true
 
-# Adapt the label for CRP that is used in the parameter code of the Observation resource
+#the label for CRP that is used in the parameter code of the Observation resource
 crp_laboratory_code:
 - 'zCRP'
 
@@ -38,7 +41,7 @@ encounter_stay_type_content:
 encounter_diagnosis_type_field:
 - 'diagnosis_use_coding_code'
 
-# Adapt the field value indicating the diagnosis type in the FHIR resource Encounter (e.g., 'ADM' for admission)
+# Adapt the field value indicating the diagnosis type in the FHIR resource Encounter. Use the code for admission diagnosis (e.g., ADM)
 encounter_diagnosis_type_content:
 - 'ADM'
 
