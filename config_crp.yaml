@@ -18,7 +18,7 @@ fhir_sort:
 
 #the label for CRP that is used in the parameter code of the Observation resource
 crp_laboratory_code:
-- 'zCRP'
+- '1988-5'
 
 # Adapt the measurment unit of CRP (mg/l or mg/dl)
 crp_unit:
