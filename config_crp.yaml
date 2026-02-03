@@ -4,6 +4,11 @@ fhir_extract:
 models_eval:
   true
 
+# In case no internet connection is possible from where the script is 
+# run from, set to true; set to false for online mode
+offline_mode: true
+
+
 # Adapt the authentication method
 authentication_method:
 #- 'basic_auth'
