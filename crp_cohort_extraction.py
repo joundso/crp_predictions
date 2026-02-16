@@ -98,6 +98,66 @@ def get_fhir_sort(config: Dict) -> bool:
     if isinstance(val, list) and val:
         val = val[0]
     return bool(val)
+    
+def resolve_offline_mode(config: Dict, args: argparse.Namespace, logger: logging.Logger) -> bool:
+    """
+    Decide offline mode with clear precedence:
+      1) CLI flag --offline forces offline
+      2) Environment variables can force offline
+      3) YAML config offline_mode is default
+    """
+    # 3) default from config (supports bool or [bool])
+    val = config.get("offline_mode", False)
+    if isinstance(val, list) and val:
+        val = val[0]
+    offline = bool(val)
+    source = "config.offline_mode"
+
+    # 2) env override
+    truthy = {"1", "true", "yes", "y", "on"}
+    for k in ("OFFLINE", "NO_INTERNET", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        v = os.environ.get(k, "")
+        if str(v).strip().lower() in truthy:
+            offline = True
+            source = f"env:{k}"
+            break
+
+    # 1) CLI override
+    if getattr(args, "offline", False):
+        offline = True
+        source = "cli:--offline"
+
+    logger.info("Offline mode resolved to %s (source=%s)", offline, source)
+    return offline
+
+
+def filter_models_for_offline(model_names: list[str], logger: logging.Logger) -> list[str]:
+    blocked_substrings = [
+        "Chronos",
+        "ZeroShot",
+        "bolt_base",
+        "huggingface",
+    ]
+
+    kept, removed = [], []
+    for m in model_names:
+        if any(s.lower() in m.lower() for s in blocked_substrings):
+            removed.append(m)
+        else:
+            kept.append(m)
+
+    if removed:
+        logger.warning(
+            "Offline mode: skipping %d model(s) that may require internet/model downloads: %s",
+            len(removed), removed
+        )
+    if not kept:
+        logger.error(
+            "Offline mode: after filtering, no models remain. "
+            "Ensure the saved predictor contains at least one fully-local model."
+        )
+    return kept
+
 
 
 def build_fhir_params(base: Dict, fhir_sort: bool, sort_value: str = "_id") -> Dict:
@@ -449,6 +509,12 @@ def main() -> int:
     parser.add_argument("--log_level", default="INFO", help="DEBUG|INFO|WARNING|ERROR|CRITICAL")
     parser.add_argument("--config_path", default="config_crp.yaml", help="Path to YAML config")
     parser.add_argument("--env_file", default="/app/env_py.env", help="Path to env file (Docker: /app/env_py.env)")
+
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Force offline mode (skips Chronos/zero-shot models). Overrides config_crp.yaml.")
+    
     args = parser.parse_args()
 
     logger = setup_logging(args.results_dir, args.log_level)
@@ -723,7 +789,13 @@ def main() -> int:
         # Forecasting
         # -----------------------------------------------------------------
 
-        for model_name in predictor.model_names():
+        offline = resolve_offline_mode(config, args, logger)
+
+        model_list = predictor.model_names()
+        if offline:
+            model_list = filter_models_for_offline(model_list, logger)
+
+        for model_name in model_list:
             output_path = os.path.join(args.results_dir, f"{model_name}_metrics.csv")
             logger.info("Running model: %s", model_name)
 
@@ -739,6 +811,7 @@ def main() -> int:
             )
 
             logger.info("Finished model: %s (metrics saved)", model_name)
+
 
         logger.info("All done. Thank you. You are awesome.")
         return 0
