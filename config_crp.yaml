@@ -19,7 +19,10 @@ fhir_count: 1000
 
 # Adapt the start time for searching the Condition Resource in case queries take too long to complete.
 fhir_recorded_date_start: 
-- 'ge2022-01'
+- 'ge2020-01'
+fhir_recorded_date_end: 
+- 'le2023-06'
+
 
 # Activate/de-activate sorting parameter for all FHIR queries
 fhir_sort:
