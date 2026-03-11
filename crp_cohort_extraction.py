@@ -98,6 +98,20 @@ def get_fhir_sort(config: Dict) -> bool:
     if isinstance(val, list) and val:
         val = val[0]
     return bool(val)
+
+def get_fhir_recorded_date_start(config: Dict) -> str:
+    """
+    Read fhir_recorded_date_start from config.
+    Supports both:
+      fhir_recorded_date_start: "ge2024-01"
+    and:
+      fhir_recorded_date_start:
+        - "ge2024-01"
+    """
+    val = config.get("fhir_recorded_date_start", "ge2024-01")
+    if isinstance(val, list) and val:
+        val = val[0]
+    return str(val)
     
 def resolve_offline_mode(config: Dict, args: argparse.Namespace, logger: logging.Logger) -> bool:
     """
@@ -515,7 +529,9 @@ def main() -> int:
     try:
         config = load_config(args.config_path, logger)
         fhir_sort = get_fhir_sort(config)
+        fhir_recorded_date_start = get_fhir_recorded_date_start(config)
         logger.info("FHIR sorting enabled (fhir_sort): %s", fhir_sort)
+        logger.info("FHIR recorded-date start parameter: %s", fhir_recorded_date_start)
 
         search = init_authentication(config, logger, env_file=args.env_file)
         fhir_count = str(config.get("fhir_count", 100))
@@ -530,7 +546,7 @@ def main() -> int:
             df=pd.DataFrame(config["icd_codes"], columns=["icd-10"]),
             resource="Condition",
             params=build_fhir_params(
-                {"_count": fhir_count, "recorded-date": "ge2024-01"},
+                {"_count": fhir_count, "recorded-date": fhir_recorded_date_start},
                 fhir_sort=fhir_sort,
                 sort_value="_id",
             ),
