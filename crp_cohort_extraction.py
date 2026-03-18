@@ -583,15 +583,15 @@ def main() -> int:
 
             # Convert recordedDate to datetime
             conditions_df["recordedDate"] = pd.to_datetime(
-                conditions_df["recordedDate"], errors="coerce"
+                conditions_df["recordedDate"], utc=True, errors="coerce"
             )
 
             # Strip ge/le prefixes from config values before datetime conversion
             start_date = pd.to_datetime(
-                fhir_recorded_date_start.replace("ge", ""), errors="coerce"
+                fhir_recorded_date_start.replace("ge", ""), utc=True, errors="coerce"
             )
             end_date = pd.to_datetime(
-                fhir_recorded_date_end.replace("le", ""), errors="coerce"
+                fhir_recorded_date_end.replace("le", ""), utc=True, errors="coerce"
             )
 
             conditions_df = conditions_df[
