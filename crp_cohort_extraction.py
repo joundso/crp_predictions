@@ -98,6 +98,34 @@ def get_fhir_sort(config: Dict) -> bool:
     if isinstance(val, list) and val:
         val = val[0]
     return bool(val)
+
+def get_fhir_recorded_date_start(config: Dict) -> str:
+    """
+    Read fhir_recorded_date_start from config.
+    Supports both:
+      fhir_recorded_date_start: "ge2020-01"
+    and:
+      fhir_recorded_date_start:
+        - "ge2020-01"
+    """
+    val = config.get("fhir_recorded_date_start", "ge2020-01")
+    if isinstance(val, list) and val:
+        val = val[0]
+    return str(val)
+  
+def get_fhir_recorded_date_end(config: Dict) -> str:
+    """
+    Read fhir_recorded_date_end from config.
+    Supports both:
+      fhir_recorded_date_end: "le2023-06"
+    and:
+      fhir_recorded_date_end:
+        - "le2023-06"
+    """
+    val = config.get("fhir_recorded_date_end", "le2023-06")
+    if isinstance(val, list) and val:
+        val = val[0]
+    return str(val)
     
 def resolve_offline_mode(config: Dict, args: argparse.Namespace, logger: logging.Logger) -> bool:
     """
@@ -526,7 +554,11 @@ def main() -> int:
     try:
         config = load_config(args.config_path, logger)
         fhir_sort = get_fhir_sort(config)
+        fhir_recorded_date_start = get_fhir_recorded_date_start(config)
+        fhir_recorded_date_end = get_fhir_recorded_date_end(config)
         logger.info("FHIR sorting enabled (fhir_sort): %s", fhir_sort)
+        logger.info("FHIR recorded-date start parameter: %s", fhir_recorded_date_start)
+        logger.info("FHIR recorded-date end: %s", fhir_recorded_date_end)
 
         search = init_authentication(config, logger, env_file=args.env_file)
         fhir_count = str(config.get("fhir_count", 100))
@@ -541,7 +573,10 @@ def main() -> int:
             df=pd.DataFrame(config["icd_codes"], columns=["icd-10"]),
             resource="Condition",
             params=build_fhir_params(
-                {"_count": fhir_count, "recorded-date": "ge2024-01"},
+                {
+                    "_count": fhir_count,
+                    "recorded-date": f"{fhir_recorded_date_start}&recorded-date={fhir_recorded_date_end}",
+                },
                 fhir_sort=fhir_sort,
                 sort_value="_id",
             ),
@@ -549,6 +584,36 @@ def main() -> int:
             logger=logger,
             label="FHIR Query #1 Conditions",
         )
+
+        if not conditions_df.empty:
+            if "recordedDate" not in conditions_df.columns:
+                logger.error("Conditions columns: %s", list(conditions_df.columns))
+                raise KeyError("conditions_df is missing 'recordedDate' column.")
+
+            before = len(conditions_df)
+
+            # Convert recordedDate to datetime
+            conditions_df["recordedDate"] = pd.to_datetime(
+                conditions_df["recordedDate"], utc=True, errors="coerce"
+            )
+
+            # Strip ge/le prefixes from config values before datetime conversion
+            start_date = pd.to_datetime(
+                fhir_recorded_date_start.replace("ge", ""), utc=True, errors="coerce"
+            )
+            end_date = pd.to_datetime(
+                fhir_recorded_date_end.replace("le", ""), utc=True, errors="coerce"
+            )
+
+            conditions_df = conditions_df[
+                conditions_df["recordedDate"].ge(start_date)
+                & conditions_df["recordedDate"].le(end_date)
+            ]
+
+            logger.info(
+                "Filtered Condition rows by recordedDate range %s to %s: %d → %d",
+                start_date, end_date, before, len(conditions_df)
+            )
 
         if conditions_df.empty:
             logger.warning("FHIR Query #1 Conditions returned 0 rows. Stopping pipeline early.")

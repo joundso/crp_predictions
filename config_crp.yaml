@@ -17,6 +17,13 @@ authentication_method:
 # Adapt the max. allowed number of queried cases per resource (in case of server-side restrictions resulting in timeouts)
 fhir_count: 1000
 
+# Adapt the start time for searching the Condition Resource in case queries take too long to complete.
+fhir_recorded_date_start: 
+- 'ge2020-01'
+fhir_recorded_date_end: 
+- 'le2023-06'
+
+
 # Activate/de-activate sorting parameter for all FHIR queries
 fhir_sort:
   true
